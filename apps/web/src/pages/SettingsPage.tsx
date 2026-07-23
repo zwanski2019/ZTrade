@@ -9,6 +9,7 @@ import { api, ApiError } from "../lib/api";
 import type { LiveFeed } from "../lib/useLiveFeed";
 import { Badge, Panel, Toggle } from "../components/Ui";
 import { useToast } from "../components/Toast";
+import { SecurityDoctor } from "../components/SecurityDoctor";
 import { Icon } from "../components/Shell";
 import { setToken } from "../lib/auth";
 import { dateTime, signedUsd, time } from "../lib/format";
@@ -113,6 +114,8 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
           Manage API connections, notification bots, and security fail-safes.
         </p>
       </div>
+
+      <SecurityDoctor />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel

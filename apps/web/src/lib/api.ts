@@ -215,6 +215,11 @@ export const api = {
   summaryPreview: (hours = 24) =>
     request<{ text: string }>(`/api/summary/preview${query({ hours })}`),
 
+  doctor: () =>
+    request<{ overall: "ok" | "warn" | "fail"; checks: Array<{ name: string; severity: "ok" | "warn" | "fail"; message: string }> }>(
+      "/api/doctor",
+    ),
+
   settings: () => request<Settings>("/api/settings"),
   saveTelegram: (body: unknown) =>
     request<{ ok: boolean }>("/api/settings/telegram", {

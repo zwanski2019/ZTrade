@@ -31,6 +31,9 @@ importers:
       '@ztrade/ingestion':
         specifier: workspace:*
         version: link:../../packages/ingestion
+      '@ztrade/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@ztrade/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -18,6 +18,7 @@ import { engine } from "../engine/engine.js";
 import { runBacktest } from "../engine/backtest.js";
 import { circuitBreaker } from "../engine/circuitBreaker.js";
 import { intel } from "../intel/index.js";
+import { runDoctor, overallSeverity } from "@ztrade/security";
 import { marketData } from "../marketdata.js";
 import { exchange } from "../exchange/bybit.js";
 import { cachedInstrument } from "../exchange/instruments.js";
@@ -191,6 +192,44 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/circuit-breaker/reset", async (req) => {
     circuitBreaker.reset(`manual reset by ${actorOf(req)}`);
     return { ok: true, state: circuitBreaker.getState(engine.getAccount()?.equity ?? 0) };
+  });
+
+  // -------------------------------------------------------------------------
+  // Security self-audit — `ztrade doctor` surfaced in the UI
+  // -------------------------------------------------------------------------
+
+  app.get("/api/doctor", async () => {
+    // Gather real facts about THIS running instance.
+    const secretEnvVars = ["BYBIT_API_KEY", "BYBIT_API_SECRET", "TELEGRAM_BOT_TOKEN"].filter(
+      (name) => (process.env[name] ?? "").trim().length > 0,
+    );
+
+    // Live clock-skew check against the exchange — a genuinely useful signal.
+    let clockSkewMs: number | null = null;
+    try {
+      const base = config.isTestnet
+        ? "https://api-testnet.bybit.com"
+        : "https://api.bybit.com";
+      const before = Date.now();
+      const res = await fetch(`${base}/v5/market/time`, { signal: AbortSignal.timeout(5000) });
+      const body = (await res.json()) as { result?: { timeNano?: string; timeSecond?: string } };
+      const serverMs = Number(body.result?.timeSecond ?? 0) * 1000;
+      // Correct for round-trip: assume the response reflects the midpoint.
+      if (serverMs > 0) clockSkewMs = before + (Date.now() - before) / 2 - serverMs;
+    } catch {
+      clockSkewMs = null;
+    }
+
+    const checks = runDoctor({
+      keyPermissions: null, // scope query needs the live adapter; public-data safe otherwise
+      bindAddress: `${config.host}:${config.port}`,
+      authEnabled: config.security.authEnabled,
+      clockSkewMs: clockSkewMs === null ? null : Math.round(clockSkewMs),
+      plaintextSecretEnvVars: secretEnvVars,
+      liveMainnet: config.network === "MAINNET" && config.tradingEnabled,
+    });
+
+    return { overall: overallSeverity(checks), checks };
   });
 
   // -------------------------------------------------------------------------
