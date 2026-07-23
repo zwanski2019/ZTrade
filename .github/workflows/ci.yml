@@ -24,7 +24,7 @@ jobs:
 
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v4
         with:
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v4
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
