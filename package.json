@@ -1,0 +1,19 @@
+{
+  "name": "ztrade",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZTrade — Bybit automated trading terminal",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "dev:server": "pnpm --filter @ztrade/server dev",
+    "dev:web": "pnpm --filter @ztrade/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.13.1"
+}

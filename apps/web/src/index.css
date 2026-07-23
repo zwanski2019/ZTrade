@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-on-background font-sans antialiased;
+  }
+
+  /* Terminal scrollbars — thin, green, unobtrusive. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-container-lowest;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-outline-variant;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-outline;
+  }
+
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-feature-settings: "liga";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  /* Bordered panel — the base surface of every card in the designs. */
+  .panel {
+    @apply border border-outline-variant bg-surface-container-low;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between border-b border-outline-variant px-4 py-3;
+  }
+
+  .panel-title {
+    @apply font-mono text-xs uppercase tracking-widest text-on-surface-variant;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 border px-4 py-2 font-mono
+           text-xs font-medium uppercase tracking-wider transition-colors
+           disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-primary {
+    @apply btn border-primary bg-primary text-on-primary hover:bg-primary-fixed;
+  }
+
+  .btn-outline {
+    @apply btn border-outline-variant text-on-surface-variant
+           hover:border-primary hover:text-primary;
+  }
+
+  .btn-danger {
+    @apply btn border-error-container bg-error-container text-on-error-container
+           hover:bg-error hover:text-on-error;
+  }
+
+  .field-label {
+    @apply mb-1.5 block font-mono text-[11px] uppercase tracking-widest text-on-surface-variant;
+  }
+
+  .field {
+    @apply w-full border border-outline-variant bg-surface-container-lowest px-3 py-2
+           font-mono text-sm text-on-surface outline-none transition-colors
+           placeholder:text-outline focus:border-primary;
+  }
+
+  /* Numeric readouts: tabular figures stop values jittering as they tick. */
+  .metric {
+    @apply font-mono tabular-nums;
+  }
+}
+
+/* High contrast mode — toggled from Settings, mirrors the HC design variants. */
+:root.hc .panel {
+  @apply border-outline;
+}
+:root.hc body,
+:root.hc .panel {
+  @apply bg-black;
+}
+:root.hc .text-on-surface-variant {
+  @apply text-on-background;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

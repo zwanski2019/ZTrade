@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ZTrade | Trade History &amp; Analytics</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body {
+            background-color: #0A0A0A;
+            color: #e5e2e1;
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow-x: hidden;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #00FF41;
+        }
+        .glow-border:focus-within {
+            border-bottom-color: #00FF41 !important;
+            box-shadow: 0 4px 12px -4px rgba(0, 255, 65, 0.2);
+        }
+        .chart-gradient {
+            background: linear-gradient(180deg, rgba(0, 255, 65, 0.1) 0%, rgba(0, 255, 65, 0) 100%);
+        }
+        .grid-bg {
+            background-size: 40px 40px;
+            background-image: linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+                              linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-background": "#e5e2e1",
+                        "outline": "#84967e",
+                        "surface-variant": "#353534",
+                        "tertiary-fixed": "#ffdad7",
+                        "on-error-container": "#ffdad6",
+                        "on-tertiary": "#68000b",
+                        "outline-variant": "#3b4b37",
+                        "on-surface-variant": "#b9ccb2",
+                        "secondary-fixed-dim": "#ffba43",
+                        "tertiary-fixed-dim": "#ffb3ae",
+                        "on-secondary": "#432c00",
+                        "surface-container-low": "#1c1b1b",
+                        "primary-container": "#00ff41",
+                        "on-primary-fixed-variant": "#00530e",
+                        "inverse-primary": "#006e16",
+                        "secondary": "#ffd393",
+                        "surface-container-highest": "#353534",
+                        "on-primary-fixed": "#002203",
+                        "on-tertiary-fixed": "#410004",
+                        "primary-fixed": "#72ff70",
+                        "inverse-on-surface": "#313030",
+                        "surface-bright": "#3a3939",
+                        "on-secondary-fixed": "#281800",
+                        "surface-tint": "#00e639",
+                        "primary-fixed-dim": "#00e639",
+                        "surface-container": "#201f1f",
+                        "background": "#131313",
+                        "on-secondary-container": "#694600",
+                        "on-surface": "#e5e2e1",
+                        "surface-dim": "#131313",
+                        "error-container": "#93000a",
+                        "tertiary-container": "#ffd2ce",
+                        "on-tertiary-container": "#bf1824",
+                        "tertiary": "#fff7f6",
+                        "on-primary-container": "#007117",
+                        "on-primary": "#003907",
+                        "secondary-fixed": "#ffddaf",
+                        "inverse-surface": "#e5e2e1",
+                        "surface-container-high": "#2a2a2a",
+                        "secondary-container": "#fdaf00",
+                        "error": "#ffb4ab",
+                        "on-error": "#690005",
+                        "surface": "#131313",
+                        "on-tertiary-fixed-variant": "#930014",
+                        "primary": "#ebffe2",
+                        "surface-container-lowest": "#0e0e0e",
+                        "on-secondary-fixed-variant": "#614000"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0px",
+                        "lg": "0px",
+                        "xl": "0px",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "margin-desktop": "24px",
+                        "margin-mobile": "16px",
+                        "sidebar-width": "240px",
+                        "gutter": "16px",
+                        "unit": "4px"
+                    },
+                    "fontFamily": {
+                        "headline-md": ["Inter"],
+                        "headline-lg": ["Inter"],
+                        "data-md": ["JetBrains Mono"],
+                        "data-lg": ["JetBrains Mono"],
+                        "body-md": ["Inter"],
+                        "label-sm": ["JetBrains Mono"]
+                    },
+                    "fontSize": {
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "data-md": ["14px", {"lineHeight": "20px", "fontWeight": "500"}],
+                        "data-lg": ["20px", {"lineHeight": "28px", "fontWeight": "500"}],
+                        "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "label-sm": ["11px", {"lineHeight": "16px", "fontWeight": "400"}]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-background text-on-surface selection:bg-primary-container selection:text-on-primary-container">
+<!-- Sidebar Navigation -->
+<aside class="w-sidebar-width h-screen fixed left-0 top-0 border-r border-white/10 flex flex-col py-margin-desktop gap-unit bg-background z-50 hidden md:flex">
+<div class="px-6 mb-8">
+<h1 class="font-headline-lg text-headline-lg font-bold text-primary-container tracking-tighter">ZTrade</h1>
+<p class="text-[10px] uppercase tracking-widest text-outline opacity-50">v2.4.0-Stable</p>
+</div>
+<nav class="flex-1 flex flex-col gap-1">
+<a class="flex items-center gap-3 py-3 hover:bg-surface-variant/50 transition-colors duration-100 text-on-surface-variant hover:text-on-surface pl-4" href="#">
+<span class="material-symbols-outlined text-[20px]">dashboard</span>
+<span class="font-body-md text-body-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 py-3 hover:bg-surface-variant/50 transition-colors duration-100 text-on-surface-variant hover:text-on-surface pl-4" href="#">
+<span class="material-symbols-outlined text-[20px]">terminal</span>
+<span class="font-body-md text-body-md">Terminals</span>
+</a>
+<a class="flex items-center gap-3 py-3 hover:bg-surface-variant/50 transition-colors duration-100 text-on-surface-variant hover:text-on-surface pl-4" href="#">
+<span class="material-symbols-outlined text-[20px]">psychology</span>
+<span class="font-body-md text-body-md">Strategies</span>
+</a>
+<!-- Active Tab: History -->
+<a class="flex items-center gap-3 py-3 text-primary-container font-bold border-l-2 border-primary-container pl-4 bg-primary-container/5" href="#">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">history</span>
+<span class="font-body-md text-body-md">History</span>
+</a>
+<a class="flex items-center gap-3 py-3 hover:bg-surface-variant/50 transition-colors duration-100 text-on-surface-variant hover:text-on-surface pl-4" href="#">
+<span class="material-symbols-outlined text-[20px]">settings</span>
+<span class="font-body-md text-body-md">Settings</span>
+</a>
+</nav>
+<div class="mt-auto px-4 flex flex-col gap-2">
+<a class="flex items-center gap-3 py-2 text-on-surface-variant hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-[18px]">description</span>
+<span class="text-xs font-label-sm">Docs</span>
+</a>
+<a class="flex items-center gap-3 py-2 text-on-surface-variant hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-[18px]">contact_support</span>
+<span class="text-xs font-label-sm">Support</span>
+</a>
+</div>
+</aside>
+<!-- Top Navigation -->
+<header class="flex justify-between items-center px-margin-desktop ml-0 md:ml-sidebar-width h-16 border-b border-white/10 bg-background sticky top-0 z-40">
+<div class="flex items-center gap-6">
+<div class="md:hidden">
+<h1 class="font-headline-md text-headline-md font-black text-primary-container">ZT</h1>
+</div>
+<div class="hidden md:flex gap-6">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 bg-primary-container"></span>
+<span class="font-data-md text-data-md text-on-surface-variant">Bybit: <span class="text-on-surface">Connected</span></span>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-data-md text-data-md text-on-surface-variant">Balance: <span class="text-primary-container">$10.00</span></span>
+</div>
+<div class="flex items-center gap-2">
+<span class="font-data-md text-data-md text-on-surface-variant">P&amp;L: <span class="text-primary-container">+2.4%</span></span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="material-symbols-outlined p-2 text-on-surface-variant hover:text-primary-container transition-all active:scale-95">notifications</button>
+<button class="material-symbols-outlined p-2 text-on-surface-variant hover:text-primary-container transition-all active:scale-95">account_balance_wallet</button>
+<div class="w-8 h-8 bg-surface-variant border border-white/10 flex items-center justify-center overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="A futuristic professional profile avatar of a trader, styled as a minimalist vector illustration with neon green accents on a dark charcoal background, cyberpunk aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBqT0FyJD4np1fqIuzRAMIF-2CfXilHnCj2T0Pj6sITOiuvW9_TsBFW1Re1UoXssEaByn1a0yVecarsFP-11t0wvc-z7FrKWj2skIFFOYlWUTs2sIk2Ltg49X7UX06-vxr5SKbrao5WX98RRBEBpcpFlCdhIrmpA8bHPN5sej_orIttG2lWCPMsur7ZWnrZkSUA2_k5hnyXOFXBnFpJtRw9PI_MMnDF0-DyIkhnqhYGac1mfKeXp76Q"/>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-0 md:ml-sidebar-width p-margin-desktop min-h-screen bg-background grid-bg pb-24 md:pb-margin-desktop">
+<!-- Analytics Header Stats -->
+<div class="grid grid-cols-2 lg:grid-cols-5 gap-0 border border-white/10 mb-6 bg-surface-container-low">
+<div class="p-6 border-r border-b lg:border-b-0 border-white/10 flex flex-col gap-1">
+<span class="text-[10px] uppercase tracking-widest text-outline">Win Rate</span>
+<span class="font-data-lg text-data-lg text-primary-container">65.00%</span>
+</div>
+<div class="p-6 border-r border-b lg:border-b-0 border-white/10 flex flex-col gap-1">
+<span class="text-[10px] uppercase tracking-widest text-outline">Avg Win</span>
+<span class="font-data-lg text-data-lg text-primary-container">+$0.45</span>
+</div>
+<div class="p-6 border-r border-white/10 flex flex-col gap-1">
+<span class="text-[10px] uppercase tracking-widest text-outline">Avg Loss</span>
+<span class="font-data-lg text-data-lg text-error">-$0.20</span>
+</div>
+<div class="p-6 border-r border-white/10 flex flex-col gap-1">
+<span class="text-[10px] uppercase tracking-widest text-outline">Profit Factor</span>
+<span class="font-data-lg text-data-lg text-on-surface">2.2</span>
+</div>
+<div class="p-6 flex flex-col gap-1">
+<span class="text-[10px] uppercase tracking-widest text-outline">Sharpe Ratio</span>
+<span class="font-data-lg text-data-lg text-on-surface">1.8</span>
+</div>
+</div>
+<!-- Cumulative P&L Chart Section -->
+<div class="border border-white/10 bg-surface-container-low mb-6 flex flex-col h-[400px]">
+<div class="px-6 py-4 border-b border-white/10 flex justify-between items-center">
+<h3 class="font-data-md text-data-md text-on-surface-variant uppercase tracking-wider">Cumulative P&amp;L Performance</h3>
+<div class="flex gap-2">
+<button class="px-3 py-1 text-[10px] border border-primary-container text-primary-container bg-primary-container/10">1D</button>
+<button class="px-3 py-1 text-[10px] border border-white/10 text-on-surface-variant hover:text-on-surface">1W</button>
+<button class="px-3 py-1 text-[10px] border border-white/10 text-on-surface-variant hover:text-on-surface">1M</button>
+<button class="px-3 py-1 text-[10px] border border-white/10 text-on-surface-variant hover:text-on-surface">ALL</button>
+</div>
+</div>
+<div class="flex-1 relative overflow-hidden group">
+<!-- Abstract Chart Visualization -->
+<svg class="w-full h-full preserve-3d" preserveaspectratio="none" viewbox="0 0 1000 300">
+<defs>
+<lineargradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#00FF41" stop-opacity="0.2"></stop>
+<stop offset="100%" stop-color="#00FF41" stop-opacity="0"></stop>
+</lineargradient>
+</defs>
+<path d="M0,250 L100,240 L200,260 L300,210 L400,180 L500,190 L600,140 L700,150 L800,100 L900,110 L1000,50 L1000,300 L0,300 Z" fill="url(#chartGradient)"></path>
+<path d="M0,250 L100,240 L200,260 L300,210 L400,180 L500,190 L600,140 L700,150 L800,100 L900,110 L1000,50" fill="none" stroke="#00FF41" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+<!-- Grid Lines -->
+<g opacity="0.1">
+<line stroke="white" stroke-dasharray="4" x1="0" x2="1000" y1="50" y2="50"></line>
+<line stroke="white" stroke-dasharray="4" x1="0" x2="1000" y1="100" y2="100"></line>
+<line stroke="white" stroke-dasharray="4" x1="0" x2="1000" y1="150" y2="150"></line>
+<line stroke="white" stroke-dasharray="4" x1="0" x2="1000" y1="200" y2="200"></line>
+<line stroke="white" stroke-dasharray="4" x1="0" x2="1000" y1="250" y2="250"></line>
+</g>
+</svg>
+<!-- Tooltip Mockup -->
+<div class="absolute top-10 right-24 bg-surface-container-highest border border-primary-container/30 p-3 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+<p class="text-[10px] text-outline mb-1 font-label-sm">2023-11-24 14:00</p>
+<p class="text-primary-container font-data-md">Equity: $12,450.42</p>
+<p class="text-on-surface-variant font-data-md">P&amp;L: +$45.12 (0.36%)</p>
+</div>
+</div>
+</div>
+<!-- Filterable Trade Log Table -->
+<div class="border border-white/10 bg-surface-container-low flex flex-col">
+<div class="px-6 py-4 border-b border-white/10 flex flex-col md:flex-row justify-between gap-4">
+<div class="flex items-center gap-4">
+<h3 class="font-data-md text-data-md text-on-surface-variant uppercase tracking-wider">Trade Log</h3>
+<div class="flex items-center bg-background border-b border-white/20 glow-border h-8 px-2">
+<span class="material-symbols-outlined text-outline text-sm">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-xs font-data-md text-on-surface placeholder:text-outline-variant w-32" placeholder="Filter Pair/ID..." type="text"/>
+</div>
+</div>
+<div class="flex gap-4">
+<select class="bg-background border border-white/10 text-[10px] h-8 font-data-md focus:ring-primary-container/50">
+<option>Status: All</option>
+<option>Filled</option>
+<option>Cancelled</option>
+</select>
+<button class="bg-primary-container text-background px-4 h-8 font-data-md text-xs hover:opacity-90 transition-opacity active:scale-95">EXPORT CSV</button>
+</div>
+</div>
+<div class="overflow-x-auto custom-scrollbar">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-white/5 bg-white/2">
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Time</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Pair</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Side</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Size</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Entry</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Exit</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest text-right">P&amp;L</th>
+<th class="px-6 py-3 text-[10px] font-label-sm text-outline uppercase tracking-widest">Status</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-white/5">
+<tr class="hover:bg-white/2 transition-colors">
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant">14:02:11</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">BTC/USDT</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container">LONG</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">0.450</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">36,450.50</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">36,812.20</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container text-right">+$162.76</td>
+<td class="px-6 py-4">
+<span class="text-[10px] px-2 py-0.5 border border-primary-container/30 text-primary-container bg-primary-container/5 uppercase">Filled</span>
+</td>
+</tr>
+<tr class="hover:bg-white/2 transition-colors">
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant">13:45:04</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">ETH/USDT</td>
+<td class="px-6 py-4 font-data-md text-xs text-error">SHORT</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">12.20</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">2,104.50</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">2,118.90</td>
+<td class="px-6 py-4 font-data-md text-xs text-error text-right">-$175.68</td>
+<td class="px-6 py-4">
+<span class="text-[10px] px-2 py-0.5 border border-primary-container/30 text-primary-container bg-primary-container/5 uppercase">Filled</span>
+</td>
+</tr>
+<tr class="hover:bg-white/2 transition-colors">
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant">12:30:19</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">SOL/USDT</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container">LONG</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">150.0</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">54.22</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">56.10</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container text-right">+$282.00</td>
+<td class="px-6 py-4">
+<span class="text-[10px] px-2 py-0.5 border border-primary-container/30 text-primary-container bg-primary-container/5 uppercase">Filled</span>
+</td>
+</tr>
+<tr class="hover:bg-white/2 transition-colors">
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant">11:15:42</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">LINK/USDT</td>
+<td class="px-6 py-4 font-data-md text-xs text-error">SHORT</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">450.0</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">14.50</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">14.42</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container text-right">+$36.00</td>
+<td class="px-6 py-4">
+<span class="text-[10px] px-2 py-0.5 border border-primary-container/30 text-primary-container bg-primary-container/5 uppercase">Filled</span>
+</td>
+</tr>
+<tr class="hover:bg-white/2 transition-colors">
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant">10:05:01</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">ARB/USDT</td>
+<td class="px-6 py-4 font-data-md text-xs text-primary-container">LONG</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">2500.0</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">1.0450</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface">-</td>
+<td class="px-6 py-4 font-data-md text-xs text-on-surface-variant text-right">$0.00</td>
+<td class="px-6 py-4">
+<span class="text-[10px] px-2 py-0.5 border border-white/10 text-outline uppercase bg-white/2">Cancelled</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="px-6 py-4 border-t border-white/10 flex justify-between items-center bg-white/2">
+<span class="text-[10px] font-label-sm text-outline">Showing 5 of 1,244 trades</span>
+<div class="flex gap-2">
+<button class="material-symbols-outlined p-1 text-on-surface-variant hover:text-on-surface disabled:opacity-20" disabled="">chevron_left</button>
+<button class="material-symbols-outlined p-1 text-on-surface-variant hover:text-on-surface">chevron_right</button>
+</div>
+</div>
+</div>
+</main>
+<!-- Bottom Navigation for Mobile -->
+<nav class="fixed bottom-0 w-full z-50 md:hidden bg-surface-container-lowest border-t border-white/10 flex justify-around items-center h-16">
+<a class="flex flex-col items-center justify-center text-on-surface-variant p-2 active:scale-90 duration-75" href="#">
+<span class="material-symbols-outlined">home</span>
+<span class="font-label-sm text-[10px]">Home</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant p-2 active:scale-90 duration-75" href="#">
+<span class="material-symbols-outlined">query_stats</span>
+<span class="font-label-sm text-[10px]">Trade</span>
+</a>
+<!-- Active Tab: Logs/History -->
+<a class="flex flex-col items-center justify-center bg-primary-container text-on-primary p-2 active:scale-90 duration-75" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">code</span>
+<span class="font-label-sm text-[10px]">Logs</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant p-2 active:scale-90 duration-75" href="#">
+<span class="material-symbols-outlined">tune</span>
+<span class="font-label-sm text-[10px]">Config</span>
+</a>
+</nav>
+<script>
+        // Micro-interaction: Update balance ticker effect
+        const balanceElements = document.querySelectorAll('.text-primary-container');
+        setInterval(() => {
+            balanceElements.forEach(el => {
+                if (el.innerText.includes('$') && Math.random() > 0.8) {
+                    const current = parseFloat(el.innerText.replace('$', '').replace(',', ''));
+                    const change = (Math.random() - 0.5) * 0.01;
+                    el.innerText = `$${(current + change).toFixed(2)}`;
+                }
+            });
+        }, 3000);
+
+        // Simple row hover data extraction console log
+        document.querySelectorAll('tbody tr').forEach(row => {
+            row.addEventListener('click', () => {
+                const pair = row.cells[1].innerText;
+                console.log(`Analyzing details for trade: ${pair}`);
+            });
+        });
+    </script>
+</body></html>

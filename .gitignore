@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+coverage/
+
+# Secrets — NEVER commit. Bybit keys grant real trading power.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local runtime state
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+logs/
+*.log
+
+.DS_Store
+.vscode/
+.idea/
+*.tsbuildinfo

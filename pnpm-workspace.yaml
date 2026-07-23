@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Both need postinstall scripts: better-sqlite3 compiles a native binding and
+# esbuild fetches its platform binary. Neither works without this.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
