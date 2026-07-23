@@ -21,7 +21,7 @@
     "@ztrade/security": "workspace:*",
     "@ztrade/shared": "workspace:*",
     "better-sqlite3": "^11.7.0",
-    "bybit-api": "^3.10.27",
+    "bybit-api": "^4.7.1",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.0",
     "tsx": "^4.19.2",
