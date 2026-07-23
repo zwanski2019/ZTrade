@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a capability
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: How could this lose money?
+      description: >
+        Anything touching sizing, order placement or risk checks needs an
+        answer here. "It cannot" is an acceptable answer if you can justify it.
+    validations:
+      required: true

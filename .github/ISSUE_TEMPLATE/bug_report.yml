@@ -1,0 +1,52 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not report security vulnerabilities here.** Use private reporting —
+        see [SECURITY.md](https://github.com/zwanski2019/ZTrade/blob/main/SECURITY.md).
+
+        **Never paste API keys, tokens, or `.env` contents.** Redact before posting.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Arm strategy ...
+        2. Start engine ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options: [Paper (testnet), Paper (mainnet data), Live testnet, Live mainnet, Backtest only]
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact anything sensitive. Output is rendered as code.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true

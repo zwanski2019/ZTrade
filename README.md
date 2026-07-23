@@ -1,256 +1,241 @@
-# ZTrade — Bybit Trading Terminal
+<div align="center">
 
-An automated Bybit trading bot with a terminal-style control UI. Built from the
-Stitch designs in [`design/reference/`](design/reference) — the phosphor-green-on-black,
-zero-radius, JetBrains Mono aesthetic is lifted from them verbatim.
+# ZTrade
 
-```
-apps/server      Fastify API + execution engine + Bybit adapter + SQLite
-apps/web         Vite + React + Tailwind terminal UI
-packages/shared  Domain types shared by both
-```
+**An event-driven automated trading system for Bybit — built like infrastructure, not like a script.**
+
+[![CI](https://github.com/zwanski2019/ZTrade/actions/workflows/ci.yml/badge.svg)](https://github.com/zwanski2019/ZTrade/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-00FF41.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-informational)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](https://www.typescriptlang.org/)
+[![Tests](https://img.shields.io/badge/tests-289%20passing-00FF41)](#testing)
+
+One execution engine. Backtest, paper and live drive the **same code path**.
+
+[Quick start](#quick-start) · [Architecture](#architecture) · [Safety](#-safety-first-read-this) · [Wiki](https://github.com/zwanski2019/ZTrade/wiki) · [Roadmap](#roadmap)
+
+</div>
 
 ---
 
-## ⚠️ Read this before you run it
+## ⚠️ Safety first — read this
 
-This software places real orders against a real exchange. It ships with three
-independent safety switches, all defaulting to the safe position:
+**This software places real orders against a real exchange. You can lose money with it.**
+
+ZTrade ships with three independent safety switches, all defaulting to the safe position:
 
 | Switch | Default | Effect |
-| --- | --- | --- |
+| :-- | :-- | :-- |
 | `ZTRADE_NETWORK` | `TESTNET` | Which Bybit environment to use |
-| `ZTRADE_ALLOW_MAINNET` | `false` | Mainnet is refused unless this is *also* `true` |
-| `ZTRADE_TRADING_ENABLED` | `false` | Paper mode: strategies run and fills are **simulated**, but no order is sent |
+| `ZTRADE_ALLOW_MAINNET` | `false` | Mainnet is **refused** unless this is *also* `true` |
+| `ZTRADE_TRADING_ENABLED` | `false` | Paper mode: strategies run and fills are simulated, but no order is sent |
 
-A fresh checkout runs on testnet, in paper mode, and refuses to touch real funds
-even if `ZTRADE_NETWORK=MAINNET` is set by accident. Reaching real money takes
-two deliberate, separate edits.
+A fresh checkout runs on testnet, in paper mode, and refuses to touch real funds even if `ZTRADE_NETWORK=MAINNET` is set by accident. Reaching real money takes two deliberate, separate edits.
 
-**None of this makes the strategies profitable.** They are ordinary textbook
-indicators. Backtest results are optimistic by construction (see below). Treat
-this as infrastructure, not as advice — you are responsible for what it trades.
+**None of this makes the bundled strategies profitable.** They are ordinary textbook indicators — MACD, RSI, Bollinger. Backtest results are optimistic by construction. Treat this repository as *infrastructure*, not as financial advice.
 
-Other precautions worth taking:
+> **Not investment advice.** No warranty. You are solely responsible for every order this software places. See [DISCLAIMER](#disclaimer).
 
-- Create **testnet** keys first: <https://testnet.bybit.com/app/user/api-management>
-- Grant the key **Trade + Read only**. Never enable withdrawal permission on a bot key.
-- `.env` is gitignored. Keep it that way.
+---
+
+## Why this exists
+
+Most retail trading bots die of the same two diseases:
+
+1. **Lookahead bias** — the backtest peeks at data the live system will not have, so results are fiction.
+2. **Backtest/live divergence** — subtly different code paths mean the strategy you validated is not the strategy you deployed.
+
+ZTrade's prime directive kills both:
+
+> **One execution engine. Backtest, paper and live drive the same code path.**
+
+The only things that change between modes are the **data source** (historical tape vs live WebSocket) and the **broker adapter** (simulated fills vs Bybit REST). Strategy, risk, execution and state machine are byte-for-byte identical.
+
+A CI gate enforces it. If a canary strategy produces different decisions in backtest and paper on the same tape, **the build fails**.
+
+---
+
+## Highlights
+
+| | |
+| :-- | :-- |
+| 🔁 **Parity-gated** | Backtest and paper must produce byte-identical decisions on the same tape, or CI fails |
+| 🛡️ **Independent risk engine** | Seven hard checks + a 3-state circuit breaker. Strategies have no path to a broker — a veto cannot be routed around |
+| 🔌 **Out-of-process kill switch** | Runs on its own thread; proven to answer while the main thread is wedged in a busy loop |
+| 📖 **L2 orderbook rebuild** | Strict sequence continuity, gap recovery, crossed-book detection. A book that might be wrong **serves nothing** |
+| 🧮 **O(1) feature store** | Incremental EMA/ATR/realised-vol on ring buffers, property-tested against full recomputes |
+| 🌐 **Market intelligence** | Regime classification, funding, sentiment and cross-venue consensus — from **free, key-free** public APIs |
+| 🔐 **Security-first** | Constant-time auth, AES-256-GCM secrets at rest, hash-chained audit log, CI secret-leak gate |
+| 📊 **Terminal UI** | Live L2 ladder, P&L, equity curve, strategy config — responsive, dark, high-contrast mode |
+
+---
+
+## Architecture
+
+```
+                    ┌──────────────────────────────────────────────┐
+   Bybit WS v5 ───▶ │  Ingestion  │ normalize → sequence-check      │
+   (public)         │             │ → L2 rebuild → staleness guard  │
+                    └──────┬───────────────────────────────────────┘
+                           │  MarketEvent (typed, venue-agnostic)
+                           ▼
+   ┌──────────────┐   ┌─────────────────┐   ┌───────────────┐
+   │ Feature Store│◀─▶│  Strategy Layer │──▶│  Risk Engine  │  pre-trade veto
+   │ (O(1), pure) │   │  (pure, no I/O) │   │ circuit breaker│
+   └──────────────┘   └─────────────────┘   └───────┬───────┘
+                                                     │ OrderIntent
+                                                     ▼
+                                             ┌───────────────┐
+                                             │  Execution    │  idempotent, rate-aware
+                                             │  + Order SM   │  TWAP / iceberg / post-only
+                                             └───────┬───────┘
+                                                     │
+                          ┌──────────────────────────┴──────────────┐
+                          ▼                                         ▼
+                   Bybit REST adapter                        Sim-fill adapter
+                   (live)                                    (backtest / paper)
+```
+
+**Strategies are pure.** They receive events and emit *intents* — never orders. No `Date.now()`, no I/O, no exchange access. Time comes from the event, which is what makes replay deterministic.
+
+### Packages
+
+| Package | Responsibility |
+| :-- | :-- |
+| [`@ztrade/core`](packages/core) | Event types, bus interface, clock, order identity. **Zero exchange dependencies** — this is the boundary |
+| [`@ztrade/ingestion`](packages/ingestion) | Bybit WS v5, L2 rebuild, normalisation, tick-to-bar, latency percentiles |
+| [`@ztrade/features`](packages/features) | Incremental rolling features on ring buffers |
+| [`@ztrade/risk`](packages/risk) | Independent risk engine + 3-state circuit breaker |
+| [`@ztrade/execution`](packages/execution) | Order state machine, scheduler, smart execution, kill switch |
+| [`@ztrade/adapters-sim`](packages/adapters-sim) | Simulated fills with latency, depth, fees and queue position |
+| [`@ztrade/security`](packages/security) | Signing, redaction, hash-chained audit log |
+| [`apps/server`](apps/server) | Fastify API, engine, SQLite persistence, market intelligence |
+| [`apps/web`](apps/web) | React + Tailwind terminal UI |
 
 ---
 
 ## Quick start
 
+**Requirements:** Node ≥ 22, pnpm ≥ 9.
+
 ```bash
+git clone https://github.com/zwanski2019/ZTrade.git
+cd ZTrade
 pnpm install
-cp .env.example .env      # then edit it
-pnpm dev                  # server on :8788, web on :5173
+cp .env.example .env        # then edit it
+pnpm dev                    # server :8788, web :5173
 ```
 
-On first start the server prints an **API token** — paste it into the UI to get
-in. Pin it by setting `ZTRADE_API_TOKEN` in `.env`.
+On first start the server prints an **API token** — paste it into the UI to get in. Pin it with `ZTRADE_API_TOKEN` in `.env`.
 
-Open <http://localhost:5173>. With no Bybit keys configured the engine still
-runs on public market data — live signals, backtests, simulated fills and the
-full UI, just no real account balance.
+Open <http://localhost:5173>. With no Bybit keys configured the engine still runs on public market data: live signals, backtests, simulated fills and the full UI.
 
 Then: **Strategies → arm one → Dashboard → Start Bot.**
 
+> Create **testnet** keys first: <https://testnet.bybit.com/app/user/api-management>
+> Grant **Trade + Read only**. Never enable withdrawal permission on a bot key.
+
+### Commands
+
 ```bash
-pnpm dev:server / pnpm dev:web
-pnpm test        # 119 unit + integration tests
+pnpm dev            # server + web
+pnpm test           # 289 tests across 10 packages
 pnpm typecheck
 pnpm build
+pnpm gate:parity    # backtest/live decision parity
+pnpm gate:secrets   # end-to-end secret leak scan
 ```
+
+---
+
+## Ship gates
+
+A build is not shippable unless these hold. Status is tracked honestly in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+| # | Gate | Status |
+| :-: | :-- | :-- |
+| 1 | Kill switch works cold, even when the loop is wedged | ✅ Done |
+| 2 | Dead-man's switch armed (`set_dcp`) | 🟡 Built, not yet wired to live private WS |
+| 3 | Risk engine can veto independently | ✅ Done |
+| 4 | Idempotent orders (deterministic `orderLinkId`) | ✅ Done |
+| 5 | No plaintext keys on disk or in logs | ✅ Done |
+| 6 | State recovers on restart | ❌ Not done |
+| 7 | Backtest == live parity | ✅ Done |
+
+Gates are marked Partial where the *mechanism* exists but live wiring does not. Overstating them is how accounts get drained.
 
 ---
 
 ## Security
 
 | Control | What it does |
-| --- | --- |
-| **Bearer token auth** | Every route except `/api/health` requires `Authorization: Bearer <token>`. Compared in constant time so the token cannot be recovered by timing. Auto-generated on first run, so the API is never accidentally left open. |
-| **WebSocket auth + origin check** | Browsers do not apply CORS to WebSockets. Both are enforced at the handshake, so a hostile page cannot open a socket to your local ZTrade and watch your trades. Loopback aliases (`localhost` ⇄ `127.0.0.1`) are treated as equivalent. |
-| **Secrets encrypted at rest** | The Telegram bot token is stored AES-256-GCM encrypted with a scrypt-derived key. Tampering is detected, not silently decrypted. |
-| **Secrets never returned** | The API only ever emits a masked key and a `hasSecret` boolean. Exchange credentials are read-only over HTTP by design — `PUT /api/settings/exchange` returns `405`. |
-| **Rate limiting** | Per-IP, configurable via `ZTRADE_RATE_LIMIT`. `trustProxy` is pinned to loopback so the header cannot be spoofed. |
-| **Security headers** | Helmet with a `default-src 'none'` CSP — the API serves JSON and a socket, never HTML. |
-| **Audit log** | Append-only record of engine start/stop, emergency stops, strategy and settings changes, and auth failures, with source IP. Survives restarts, unlike the rolling log buffer. |
-| **Startup refusal** | The server will not start with auth disabled while live-trading on mainnet. |
+| :-- | :-- |
+| **Bearer token auth** | Every route except `/api/health`. Constant-time comparison, auto-generated on first run |
+| **WebSocket auth + origin check** | Browsers don't apply CORS to WebSockets; both are enforced at the handshake |
+| **Secrets encrypted at rest** | AES-256-GCM with a scrypt-derived key; tampering detected, not silently decrypted |
+| **Secrets never returned** | The API emits a masked key and a boolean. Credentials are read-only over HTTP by design |
+| **Hash-chained audit log** | `h_n = SHA256(h_{n-1} ‖ entry)`. Editing history breaks the chain at a reportable index |
+| **Rate limiting + CSP** | Per-IP limits, Helmet with `default-src 'none'` |
+| **CI secret gate** | Boots the real server with sentinel credentials and fails the build if one appears in logs or responses |
 
-There is still **no multi-user model**. Bind to `127.0.0.1` and treat the token
-as a single shared credential.
+Found a vulnerability? See [SECURITY.md](SECURITY.md). **Please do not open a public issue.**
 
 ---
 
-## How it works
+## Testing
 
-**Execution engine** (`apps/server/src/engine/engine.ts`) is a state machine —
-`STOPPED → STARTING → RUNNING → STOPPING`, plus `ERROR`. While running it:
+```
+packages/core          18   clock, identity, bus, book maths
+packages/security      24   audit chain, redaction, signing
+packages/execution     49   order SM (fuzzed), scheduler, smart exec, kill switch
+packages/ingestion     38   L2 rebuild, gap recovery, bars, latency
+packages/features      16   incremental == batch property tests
+packages/risk          25   seven checks, breaker, exposure properties
+apps/server           119   strategies, reconciler, crypto, intel
+─────────────────────────
+                      289   passing
+```
 
-- pings Bybit every 5s for the heartbeat and latency readout,
-- every 15s reconciles open positions, then evaluates the armed strategy,
-- records every signal — **including why one was skipped**,
-- pushes everything to the browser over one WebSocket.
-
-**Only one strategy is armed at a time**, matching the dashboard's single
-"Active Strategy" slot. Arming is explicit — the seeded default starts disabled.
-
-**Reconciliation** (`engine/reconciler.ts`) is what closes trades. In live mode
-the exchange owns the position, so a trade row whose symbol has vanished from
-the exchange is settled at the current price. In paper mode there is nothing on
-the exchange, so the mark price is evaluated against the recorded stop/target
-directly. Settling is idempotent — a manual close racing the reconciler cannot
-double-count the P&L. Realised P&L is always **net of both fees**; a trade
-closed at its entry price is a small loss, as it should be.
-
-**Risk** (`engine/risk.ts`) is the single choke point before any order. It
-enforces the daily trade cap, one-position-per-symbol, allowed pairs, max
-concurrent positions and the global risk cap, then clamps size to whichever
-ceiling binds first. Quantities respect the instrument's real `qtyStep`,
-`minOrderQty` and `minNotional` fetched from Bybit, and always round **down** —
-rounding up could exceed the limit that was just approved.
-
-Three sizing modes:
-
-| Mode | Behaviour |
-| --- | --- |
-| `FIXED_NOTIONAL` | Same position value every time |
-| `PERCENT_EQUITY` | Scales with the account balance |
-| `RISK_BASED` | Constant money at risk: halving the stop distance doubles the position, so the loss at the stop stays the same |
-
-**Circuit breaker** (`engine/circuitBreaker.ts`) sits above per-trade risk.
-Per-trade limits cap one bad trade; this caps a bad *day*. Ten trades each
-losing an "acceptable" 1% is still a 10% drawdown, and no per-trade rule can see
-that coming. Trips on a daily loss percentage or a consecutive-loss streak, then
-halts new entries for a cooldown. It does **not** flatten open positions unless
-`flattenOnTrip` is set — closing into a spike is often worse than holding.
-
-**Trailing stops** ratchet only in the profitable direction and are pushed to
-the exchange, so the worst case improves monotonically.
-
-**Strategies** (`strategies/index.ts`):
-
-| Kind | Logic | Signals it emits |
-| --- | --- | --- |
-| Momentum | MACD crossover, confirmed by RSI | `MACD_CROSS`, `RSI CONFIRM` |
-| Mean Reversion | Fade Bollinger pierces at RSI extremes | `OVERBOUGHT`, `OVERSOLD` |
-| Grid | Step in/out around a rolling mean | `GRID_STEP_n` |
-| Custom | **Inert.** See below | — |
-
-Custom Script is deliberately not implemented. Running operator-supplied JS
-would need a real sandbox (worker + resource caps); an `eval()` here would be a
-remote code execution hole, so the option stays disabled until that exists.
-
-**Backtests** are honest about their limits: fills are modelled at the candle
-close with no slippage, and a candle spanning both stop and target counts as a
-stop. Each symbol is simulated independently and the trades are then merged in
-time order, so position sizing does not compound across symbols mid-run but the
-equity curve is chronologically correct.
+Beyond unit tests: **property tests** (the order state machine is fuzzed over 400 seeds; risk can never breach its cap), **acceptance tests** (kill the WS mid-session and prove no stale price escapes), and **gates** wired into CI.
 
 ---
 
-## Market intelligence
+## Roadmap
 
-A layer of context built entirely on **free, key-free public APIs**. Every
-provider is optional: if one is unreachable the corresponding intelligence is
-simply absent and the engine keeps trading on price alone. Failures never throw,
-results are cached, and stale data is served in preference to nothing.
+- [x] **Phase 0** — Spine: core types, bus, clock, security, audit chain
+- [x] **Phase 1** — Read-only: WS ingestion, L2 rebuild, feature store
+- [x] **Phase 2** — Sim loop: sim-fill adapter, canary, parity gate
+- [x] **Phase 3** — Risk + execution shell, kill switch
+- [ ] **Phase 4** — Paper live: private WS, dead-man armed, reconciliation on testnet
+- [ ] **Phase 5** — Small live: mainnet, tiny size, all gates green
 
-| Source | Provides | Cost |
-| --- | --- | --- |
-| alternative.me | Crypto Fear & Greed index | free, no key |
-| Binance futures (public) | Funding rate, open interest + history, long/short ratio | free, no key |
-| CoinGecko (public) | BTC dominance, total market cap, 24h change | free, no key |
-| Coinbase + Kraken (public) | Independent spot prices for cross-venue consensus | free, no key |
-| Bybit klines | Regime, volatility and correlation, from the prices we actually trade | free |
-
-What it does with them:
-
-**Regime classification** (ADX + ATR) labels the market TRENDING / RANGING /
-VOLATILE / TRANSITIONAL, and blocks strategies that do not suit it. Mean
-reversion into a strong trend and momentum in a chop are the two classic ways a
-sound strategy bleeds money, and neither failure is visible to the strategy
-itself — it only sees its own indicator firing correctly. An uncertain
-classification blocks nothing.
-
-**Correlation guard.** Three positions in BTC, ETH and SOL is not three
-positions. On real mainnet 5m data those pairs correlate at **0.81–0.89**, so
-without this check the "max open positions" limit silently permits exactly the
-concentration it was meant to prevent. Correlation is computed on returns, not
-prices — two assets that both drift up have a high price correlation almost by
-construction.
-
-**Cross-venue consensus guard.** Our price is compared against the median of
-independent venues. A large deviation means the feed is stale or the book is
-broken — precisely when a bot should stop rather than act.
-
-**Conviction scoring** folds the strategy's own confidence together with regime
-agreement, funding (crowd positioning), sentiment and open-interest trend into
-one 0–1 score that gates the entry and scales the size. Size scaling is bounded
-to 0.5×–1.0×: conviction may shrink a position but **never** grow it beyond what
-the risk limits approved.
-
-**Volatility stops** derive the stop distance from ATR instead of a fixed
-percentage, so "the move went genuinely against me" means the same thing in a
-calm market and a wild one. Optional, off by default.
-
-Honest limits: the scoring weights are reasoned defaults, not fitted parameters.
-Sentiment and funding are slow, noisy inputs that matter mainly at extremes.
-Correlation is backward-looking. Treat the score as a filter against obviously
-bad entries, not as alpha.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for per-subsystem failure modes and what is deliberately *not* built.
 
 ---
 
-## API
+## Contributing
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `GET` | `/api/health` | The only unauthenticated route |
-| `GET` | `/api/dashboard` | Everything the dashboard needs in one round trip |
-| `GET` | `/api/status` | Engine state, breaker state, open position count |
-| `POST` | `/api/engine/start` \| `/stop` | |
-| `POST` | `/api/engine/emergency-stop` | Requires `{"confirm":"CLOSE_ALL"}` |
-| `GET` | `/api/positions` | Exchange positions + open trade rows |
-| `POST` | `/api/positions/:symbol/close` | Close one symbol |
-| `GET`/`PUT` | `/api/circuit-breaker` | Config + live state |
-| `GET` | `/api/intel` | Regime, sentiment, funding, correlation snapshot |
-| `PUT` | `/api/intel/settings` | Toggle regime/conviction/correlation filters |
-| `POST` | `/api/circuit-breaker/reset` | Clear a trip |
-| `GET`/`POST` | `/api/strategies` | |
-| `POST` | `/api/strategies/:id/activate` \| `/backtest` | |
-| `GET` | `/api/trades`, `/api/trades/export.csv` | Filter, paginate, search |
-| `GET` | `/api/stats`, `/api/stats/symbols`, `/api/equity` | |
-| `GET` | `/api/logs`, `/api/audit` | |
-| `GET`/`PUT` | `/api/settings/*` | |
-| `WS` | `/ws` | Status, positions, signals, trades, logs, breaker, heartbeat |
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first — in particular the rule that **every subsystem PR must state how it fails and how it recovers**.
 
-The emergency stop needs an explicit confirmation field so a stray POST — or a
-misrouted fetch during development — cannot flatten a live book.
+Non-negotiables:
+
+- Strategies stay pure. No `Date.now()`, no I/O, no direct exchange calls.
+- Never assume an order filled because REST returned `200`. Truth is the execution stream.
+- No backtest with instant, zero-slippage, zero-fee fills.
+- The parity gate must stay green.
 
 ---
 
-## Status
+## Disclaimer
 
-Working: market intelligence from five free public sources, regime gating,
-correlation and consensus guards, conviction scoring, engine lifecycle, all three strategies, the full trade lifecycle
-(open → settle → net P&L → analytics), risk gate with instrument-aware sizing,
-circuit breaker, trailing stops, backtests against real Bybit candles, SQLite
-persistence with additive migrations, trade history with CSV export, live
-WebSocket feed, Telegram alerts with a daily summary scheduler, audit log, kill
-switch, token auth, and all four screens responsive desktop/mobile with a
-high-contrast mode.
+ZTrade is provided **as is**, without warranty of any kind. It is a piece of engineering infrastructure, not financial advice and not a licensed product.
 
-Not done yet:
+Cryptocurrency derivatives trading carries a **high risk of loss**, including loss exceeding your deposit. Automated systems can fail in ways manual trading does not: a bug, a stale feed, or an exchange outage can produce losses faster than you can react.
 
-- **Custom strategy sandbox** (above).
-- **No multi-user model** — one shared token, no roles.
-- **Grid** does not manage resting ladder orders; it enters and exits at market.
-- **Partial fills and partial closes** are not modelled: a trade row is all-or-nothing.
-- **Backtest sizing does not compound** across symbols within a run.
-- The reconciler infers a live close reason from where price landed; it does not
-  query which order actually filled.
-- **Intelligence weights are unfitted.** No walk-forward validation has been done
-  on the conviction model; it is a sanity filter, not a proven edge.
-- Free providers are courtesy-rate-limited. Heavy multi-pair use may need caching
-  windows widened or a paid feed.
+Do not run this with money you cannot afford to lose. Do not run it on mainnet until you have run it on testnet for an extended period and understand every line it executes on your behalf. The authors accept no liability for any loss.
+
+---
+
+## License
+
+[MIT](LICENSE) © [zwanski2019](https://github.com/zwanski2019) — [Zwanski Tech](https://github.com/zwanski2019)
