@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-00FF41.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-informational)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-352%20passing-00FF41)](#testing)
+[![Tests](https://img.shields.io/badge/tests-399%20passing-00FF41)](#testing)
 
 One execution engine. Backtest, paper and live drive the **same code path**.
 
@@ -65,7 +65,8 @@ A CI gate enforces it. If a canary strategy produces different decisions in back
 | 📖 **L2 orderbook rebuild** | Strict sequence continuity, gap recovery, crossed-book detection. A book that might be wrong **serves nothing** |
 | 🧮 **O(1) feature store** | Incremental EMA/ATR/realised-vol on ring buffers, property-tested against full recomputes |
 | 🌐 **Market intelligence** | Regime classification, funding, sentiment and cross-venue consensus — from **free, key-free** public APIs |
-| 🔐 **Security-first** | Constant-time auth, AES-256-GCM secrets at rest, hash-chained audit log, CI secret-leak gate |
+| 🔐 **Security Plane** | `Secret<T>` structural redaction, key-scope refusal, signal HMAC auth, hash-chained audit — plus a **self-red-team suite in CI** |
+| 🎯 **Self-red-team** | Ships the exploits it defends against; 9 attacks proven to fail in CI. See [SECURITY_TESTS](docs/SECURITY_TESTS.md) |
 | 📊 **Terminal UI** | Live L2 ladder, P&L, equity curve, strategy config — responsive, dark, high-contrast mode |
 
 ---
@@ -145,6 +146,7 @@ pnpm typecheck
 pnpm build
 pnpm gate:parity    # backtest/live decision parity
 pnpm gate:secrets   # end-to-end secret leak scan
+pnpm gate:redteam   # self-red-team attack suite
 ```
 
 ---

@@ -5,6 +5,46 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-23
+
+The Security Plane — ZTrade's wedge. A security-first algorithmic trading
+framework built by an offensive-security researcher, for people who understand a
+trading bot is a credentialed, money-moving target.
+
+### Added
+
+- **`Secret<T>`** — structural redaction as a TYPE, not developer discipline.
+  Every serialisation path a logger can reach (toString, toJSON, util.inspect,
+  primitive coercion) returns `[REDACTED]`; the plaintext is reachable only via
+  an explicit `.expose()`. Property-tested over 500 fuzzed serialisations, zero
+  leaks.
+- **Key-scope enforcement** — the bot queries its own API key's permissions and
+  REFUSES to start if withdrawal is enabled. A compromise of a withdrawal key is
+  a drained account, not a bad trade. Wired into the live broker's
+  `verifyKeyScope()`.
+- **Signal authentication** — HMAC-SHA256 + nonce replay protection for external
+  signals (webhooks). Unsigned, tampered, stale, future-dated, or replayed
+  signals are rejected; a forged signal never burns a legitimate nonce.
+- **The self-red-team suite** (`security-tests/`) — ships the exploits ZTrade
+  defends against and proves in CI that the defence holds. Nine attacks:
+  exfiltration, withdrawal key, forged/replayed/tampered webhook, clock skew,
+  nonce exhaustion, timing. **A failure blocks the build.**
+- **`ztrade doctor`** — a first-run security self-audit: key scope, network
+  exposure, clock skew, plaintext secrets, dependency surface.
+- **`docs/THREAT_MODEL.md`** and **`docs/SECURITY_TESTS.md`** — the public threat
+  model and per-attack control mapping.
+
+### Verified
+
+- 399 tests across 12 packages; the self-red-team suite green; parity and secret
+  gates green; typecheck clean; web builds.
+
+### Positioning
+
+ZTrade is not "a bot that trades on Bybit." It is an open-source, security-first
+algorithmic trading framework. The moat is the Security Plane; everything else is
+table stakes. No profit claims, ever.
+
 ## [0.6.0] — 2026-07-23
 
 Phase 4 — the live path goes real. Closes ship gates #2 and #6, leaving all
@@ -143,6 +183,7 @@ gates. Additive — the existing engine is untouched and still runs.
 - Three-switch safety posture: testnet default, mainnet double opt-in, separate
   live-order gate.
 
+[0.7.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.7.0
 [0.6.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.6.0
 [0.5.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.5.0
 [0.4.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.4.0

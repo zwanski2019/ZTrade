@@ -68,6 +68,12 @@ jobs:
       - name: 'Gate #5 — secret leak scan'
         run: pnpm gate:secrets
 
+      # The self-red-team suite. A trading framework that ships the exploits it
+      # defends against and proves in CI that the defence holds. A failure here
+      # is a security regression, not a flaky test.
+      - name: 'Self-red-team suite'
+        run: pnpm gate:redteam
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

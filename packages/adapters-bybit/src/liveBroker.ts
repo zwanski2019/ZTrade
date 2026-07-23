@@ -1,6 +1,7 @@
 import type { OrderIntent } from "@ztrade/core";
 import type { Broker, OrderEvent, SubmitAck, SubmitRequest } from "@ztrade/execution";
 import { BybitRest, BybitRestError, type RestConfig } from "./rest.ts";
+import { evaluateKeyScope, parseBybitPermissions, type KeyScopeVerdict } from "@ztrade/security";
 
 /**
  * Live Bybit broker — the real implementation of the same `Broker` interface
@@ -147,6 +148,23 @@ export class BybitLiveBroker implements Broker {
       this.log("error", `cancelAll failed: ${(err as Error).message}`);
       return { cancelled: 0 };
     }
+  }
+
+  /**
+   * Key-scope enforcement (§3.2). Queries THIS key's permissions and returns a
+   * verdict. The caller must refuse to start on `safe: false` — a
+   * withdrawal-enabled key turns any compromise into a drained account.
+   *
+   * This is the one startup check that is non-negotiable in the directive, so
+   * it is a first-class method on the live broker rather than an afterthought.
+   */
+  async verifyKeyScope(): Promise<KeyScopeVerdict> {
+    const info = await this.rest.get<{
+      permissions?: Record<string, string[]>;
+      ips?: string[];
+      readOnly?: number;
+    }>("/v5/user/query-api");
+    return evaluateKeyScope(parseBybitPermissions(info));
   }
 
   drainEvents(): Array<{ orderLinkId: string; event: OrderEvent; at: number }> {

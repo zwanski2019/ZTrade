@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "security-tests"
 
 # Both need postinstall scripts: better-sqlite3 compiles a native binding and
 # esbuild fetches its platform binary. Neither works without this.
