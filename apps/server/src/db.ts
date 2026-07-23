@@ -3,13 +3,17 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
+  AuditEntry,
+  CloseReason,
   EquityPoint,
   PerformanceStats,
   Signal,
   StrategyConfig,
+  SymbolStats,
   Trade,
   TradeStatus,
 } from "@ztrade/shared";
+import { defaultRiskLimits } from "@ztrade/shared";
 import { config } from "./config.js";
 
 mkdirSync(dirname(config.databasePath), { recursive: true });
@@ -68,7 +72,38 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id     TEXT PRIMARY KEY,
+  at     INTEGER NOT NULL,
+  action TEXT    NOT NULL,
+  detail TEXT    NOT NULL,
+  actor  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
 `);
+
+/**
+ * Additive migrations.
+ *
+ * SQLite has no `ADD COLUMN IF NOT EXISTS`, so each column is checked against
+ * PRAGMA table_info first. Additive-only by design: an existing trade database
+ * is real money history and must never be dropped to accommodate a schema change.
+ */
+function addColumn(table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+addColumn("trades", "fees", "REAL NOT NULL DEFAULT 0");
+addColumn("trades", "close_reason", "TEXT");
+addColumn("trades", "stop_loss", "REAL");
+addColumn("trades", "take_profit", "REAL");
+addColumn("trades", "paper", "INTEGER NOT NULL DEFAULT 0");
+addColumn("signals", "skipped_reason", "TEXT");
 
 // ---------------------------------------------------------------------------
 // Row mappers
@@ -84,9 +119,14 @@ interface TradeRow {
   entry_price: number;
   exit_price: number | null;
   pnl: number;
+  fees: number;
   status: string;
+  close_reason: string | null;
   strategy_id: string | null;
   exchange_order_id: string | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  paper: number;
 }
 
 function toTrade(r: TradeRow): Trade {
@@ -100,9 +140,14 @@ function toTrade(r: TradeRow): Trade {
     entryPrice: r.entry_price,
     exitPrice: r.exit_price,
     pnl: r.pnl,
+    fees: r.fees ?? 0,
     status: r.status as TradeStatus,
+    closeReason: (r.close_reason as CloseReason | null) ?? null,
     strategyId: r.strategy_id,
     exchangeOrderId: r.exchange_order_id,
+    stopLoss: r.stop_loss,
+    takeProfit: r.take_profit,
+    paper: r.paper === 1,
   };
 }
 
@@ -112,9 +157,11 @@ function toTrade(r: TradeRow): Trade {
 
 const insertTradeStmt = db.prepare(`
   INSERT INTO trades (id, opened_at, closed_at, symbol, side, size, entry_price,
-                      exit_price, pnl, status, strategy_id, exchange_order_id)
+                      exit_price, pnl, fees, status, close_reason, strategy_id,
+                      exchange_order_id, stop_loss, take_profit, paper)
   VALUES (@id, @opened_at, @closed_at, @symbol, @side, @size, @entry_price,
-          @exit_price, @pnl, @status, @strategy_id, @exchange_order_id)
+          @exit_price, @pnl, @fees, @status, @close_reason, @strategy_id,
+          @exchange_order_id, @stop_loss, @take_profit, @paper)
 `);
 
 export function insertTrade(trade: Omit<Trade, "id"> & { id?: string }): Trade {
@@ -128,27 +175,61 @@ export function insertTrade(trade: Omit<Trade, "id"> & { id?: string }): Trade {
     entry_price: trade.entryPrice,
     exit_price: trade.exitPrice,
     pnl: trade.pnl,
+    fees: trade.fees,
     status: trade.status,
+    close_reason: trade.closeReason,
     strategy_id: trade.strategyId,
     exchange_order_id: trade.exchangeOrderId,
+    stop_loss: trade.stopLoss,
+    take_profit: trade.takeProfit,
+    paper: trade.paper ? 1 : 0,
   };
   insertTradeStmt.run(row);
   return toTrade(row);
 }
 
 const closeTradeStmt = db.prepare(`
-  UPDATE trades SET closed_at = ?, exit_price = ?, pnl = ?, status = 'Filled'
-  WHERE id = ?
+  UPDATE trades
+  SET closed_at = @closed_at, exit_price = @exit_price, pnl = @pnl,
+      fees = @fees, close_reason = @close_reason, status = 'Filled'
+  WHERE id = @id AND closed_at IS NULL
 `);
 
-export function closeTrade(
+/**
+ * Settles an open trade. The `closed_at IS NULL` guard makes this idempotent:
+ * the reconciler and a manual close can race, and closing twice would double
+ * count the P&L.
+ */
+export function closeTrade(opts: {
+  id: string;
+  closedAt: number;
+  exitPrice: number;
+  pnl: number;
+  fees: number;
+  reason: CloseReason;
+}): Trade | null {
+  const result = closeTradeStmt.run({
+    id: opts.id,
+    closed_at: opts.closedAt,
+    exit_price: opts.exitPrice,
+    pnl: opts.pnl,
+    fees: opts.fees,
+    close_reason: opts.reason,
+  });
+  if (result.changes === 0) return null;
+  return getTrade(opts.id);
+}
+
+export function updateTradeProtection(
   id: string,
-  closedAt: number,
-  exitPrice: number,
-  pnl: number,
-): Trade | null {
-  closeTradeStmt.run(closedAt, exitPrice, pnl, id);
-  return getTrade(id);
+  stopLoss: number | null,
+  takeProfit: number | null,
+): void {
+  db.prepare(`UPDATE trades SET stop_loss = ?, take_profit = ? WHERE id = ?`).run(
+    stopLoss,
+    takeProfit,
+    id,
+  );
 }
 
 const getTradeStmt = db.prepare(`SELECT * FROM trades WHERE id = ?`);
@@ -214,26 +295,83 @@ export function recentTrades(limit = 10): Trade[] {
   return listTrades({ limit }).trades;
 }
 
+export function openTrades(): Trade[] {
+  const rows = db
+    .prepare(`SELECT * FROM trades WHERE closed_at IS NULL AND status = 'Open'`)
+    .all() as TradeRow[];
+  return rows.map(toTrade);
+}
+
+export function openTradeForSymbol(symbol: string): Trade | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM trades WHERE symbol = ? AND closed_at IS NULL AND status = 'Open'
+       ORDER BY opened_at DESC LIMIT 1`,
+    )
+    .get(symbol) as TradeRow | undefined;
+  return row ? toTrade(row) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Signals
 // ---------------------------------------------------------------------------
 
 const insertSignalStmt = db.prepare(`
-  INSERT INTO signals (id, at, symbol, action, reason, confidence, acted)
-  VALUES (@id, @at, @symbol, @action, @reason, @confidence, @acted)
+  INSERT INTO signals (id, at, symbol, action, reason, confidence, acted, skipped_reason)
+  VALUES (@id, @at, @symbol, @action, @reason, @confidence, @acted, @skipped_reason)
 `);
 
 export function insertSignal(signal: Omit<Signal, "id"> & { id?: string }): Signal {
   const full: Signal = { ...signal, id: signal.id ?? randomUUID() };
-  insertSignalStmt.run({ ...full, acted: full.acted ? 1 : 0 });
+  insertSignalStmt.run({
+    id: full.id,
+    at: full.at,
+    symbol: full.symbol,
+    action: full.action,
+    reason: full.reason,
+    confidence: full.confidence,
+    acted: full.acted ? 1 : 0,
+    skipped_reason: full.skippedReason,
+  });
   return full;
+}
+
+export function markSignalActed(
+  id: string,
+  acted: boolean,
+  skippedReason: string | null,
+): void {
+  db.prepare(`UPDATE signals SET acted = ?, skipped_reason = ? WHERE id = ?`).run(
+    acted ? 1 : 0,
+    skippedReason,
+    id,
+  );
 }
 
 export function recentSignals(limit = 20): Signal[] {
   const rows = db
     .prepare(`SELECT * FROM signals ORDER BY at DESC LIMIT ?`)
-    .all(limit) as Array<Omit<Signal, "acted"> & { acted: number }>;
-  return rows.map((r) => ({ ...r, acted: r.acted === 1 }));
+    .all(limit) as Array<{
+    id: string;
+    at: number;
+    symbol: string;
+    action: "BUY" | "SELL";
+    reason: string;
+    confidence: number;
+    acted: number;
+    skipped_reason: string | null;
+  }>;
+
+  return rows.map((r) => ({
+    id: r.id,
+    at: r.at,
+    symbol: r.symbol,
+    action: r.action,
+    reason: r.reason,
+    confidence: r.confidence,
+    acted: r.acted === 1,
+    skippedReason: r.skipped_reason,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +396,9 @@ function toStrategy(r: StrategyRow): StrategyConfig {
     kind: r.kind as StrategyConfig["kind"],
     enabled: r.enabled === 1,
     pairs: JSON.parse(r.pairs) as string[],
-    risk: JSON.parse(r.risk) as StrategyConfig["risk"],
+    // Merge over defaults so strategies saved before newer risk fields existed
+    // still load with sane values instead of undefined.
+    risk: { ...defaultRiskLimits, ...(JSON.parse(r.risk) as StrategyConfig["risk"]) },
     params: JSON.parse(r.params) as StrategyConfig["params"],
     updatedAt: r.updated_at,
   };
@@ -340,8 +480,15 @@ export function equityCurve(from?: number, to?: number): EquityPoint[] {
     .all(from ?? 0, to ?? Number.MAX_SAFE_INTEGER) as EquityPoint[];
 }
 
+export function latestEquity(): number | null {
+  const row = db
+    .prepare(`SELECT equity FROM equity_points ORDER BY at DESC LIMIT 1`)
+    .get() as { equity: number } | undefined;
+  return row?.equity ?? null;
+}
+
 // ---------------------------------------------------------------------------
-// Settings (key/value; secrets live in .env, not here)
+// Settings (key/value)
 // ---------------------------------------------------------------------------
 
 export function getSetting<T>(key: string, fallback: T): T {
@@ -364,6 +511,30 @@ export function setSetting(key: string, value: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+export function recordAudit(action: string, detail: string, actor: string | null): AuditEntry {
+  const entry: AuditEntry = {
+    id: randomUUID(),
+    at: Date.now(),
+    action,
+    detail,
+    actor,
+  };
+  db.prepare(
+    `INSERT INTO audit_log (id, at, action, detail, actor) VALUES (?, ?, ?, ?, ?)`,
+  ).run(entry.id, entry.at, entry.action, entry.detail, entry.actor);
+  return entry;
+}
+
+export function listAudit(limit = 100): AuditEntry[] {
+  return db
+    .prepare(`SELECT id, at, action, detail, actor FROM audit_log ORDER BY at DESC LIMIT ?`)
+    .all(limit) as AuditEntry[];
+}
+
+// ---------------------------------------------------------------------------
 // Analytics
 // ---------------------------------------------------------------------------
 
@@ -377,12 +548,15 @@ export function setSetting(key: string, value: unknown): void {
 export function performanceStats(from?: number, to?: number): PerformanceStats {
   const rows = db
     .prepare(
-      `SELECT pnl FROM trades
+      `SELECT pnl, fees FROM trades
        WHERE status = 'Filled' AND closed_at IS NOT NULL
          AND opened_at >= ? AND opened_at <= ?
        ORDER BY opened_at ASC`,
     )
-    .all(from ?? 0, to ?? Number.MAX_SAFE_INTEGER) as Array<{ pnl: number }>;
+    .all(from ?? 0, to ?? Number.MAX_SAFE_INTEGER) as Array<{
+    pnl: number;
+    fees: number;
+  }>;
 
   const pnls = rows.map((r) => r.pnl);
   const totalTrades = pnls.length;
@@ -397,6 +571,10 @@ export function performanceStats(from?: number, to?: number): PerformanceStats {
       totalTrades: 0,
       netPnl: 0,
       maxDrawdown: 0,
+      totalFees: 0,
+      longestWinStreak: 0,
+      longestLossStreak: 0,
+      expectancy: 0,
     };
   }
 
@@ -407,46 +585,125 @@ export function performanceStats(from?: number, to?: number): PerformanceStats {
   const netPnl = pnls.reduce((a, b) => a + b, 0);
 
   const mean = netPnl / totalTrades;
-  const variance =
-    pnls.reduce((acc, p) => acc + (p - mean) ** 2, 0) / totalTrades;
+  const variance = pnls.reduce((acc, p) => acc + (p - mean) ** 2, 0) / totalTrades;
   const stdev = Math.sqrt(variance);
 
   // Max drawdown across the cumulative P&L path.
   let peak = 0;
   let cumulative = 0;
   let maxDrawdown = 0;
+  // Longest runs of wins and losses.
+  let winStreak = 0;
+  let lossStreak = 0;
+  let longestWinStreak = 0;
+  let longestLossStreak = 0;
+
   for (const p of pnls) {
     cumulative += p;
     peak = Math.max(peak, cumulative);
     maxDrawdown = Math.max(maxDrawdown, peak - cumulative);
+
+    if (p > 0) {
+      winStreak += 1;
+      lossStreak = 0;
+      longestWinStreak = Math.max(longestWinStreak, winStreak);
+    } else if (p < 0) {
+      lossStreak += 1;
+      winStreak = 0;
+      longestLossStreak = Math.max(longestLossStreak, lossStreak);
+    }
   }
 
+  const winRate = wins.length / totalTrades;
+  const avgWin = wins.length ? grossProfit / wins.length : 0;
+  const avgLoss = losses.length ? -grossLoss / losses.length : 0;
+
   return {
-    winRate: wins.length / totalTrades,
-    avgWin: wins.length ? grossProfit / wins.length : 0,
-    avgLoss: losses.length ? -grossLoss / losses.length : 0,
-    profitFactor: grossLoss === 0 ? (grossProfit > 0 ? Infinity : 0) : grossProfit / grossLoss,
+    winRate,
+    avgWin,
+    avgLoss,
+    profitFactor:
+      grossLoss === 0 ? (grossProfit > 0 ? Infinity : 0) : grossProfit / grossLoss,
     sharpeRatio: stdev === 0 ? 0 : mean / stdev,
     totalTrades,
     netPnl,
     maxDrawdown,
+    totalFees: rows.reduce((a, r) => a + (r.fees ?? 0), 0),
+    longestWinStreak,
+    longestLossStreak,
+    // Expected value per trade: what one more trade is worth on average.
+    expectancy: winRate * avgWin + (1 - winRate) * avgLoss,
   };
+}
+
+export function symbolStats(from?: number, to?: number): SymbolStats[] {
+  const rows = db
+    .prepare(
+      `SELECT symbol,
+              COUNT(*)                                   AS trades,
+              SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END)   AS wins,
+              SUM(pnl)                                   AS net_pnl
+       FROM trades
+       WHERE status = 'Filled' AND closed_at IS NOT NULL
+         AND opened_at >= ? AND opened_at <= ?
+       GROUP BY symbol
+       ORDER BY net_pnl DESC`,
+    )
+    .all(from ?? 0, to ?? Number.MAX_SAFE_INTEGER) as Array<{
+    symbol: string;
+    trades: number;
+    wins: number;
+    net_pnl: number;
+  }>;
+
+  return rows.map((r) => ({
+    symbol: r.symbol,
+    trades: r.trades,
+    winRate: r.trades > 0 ? r.wins / r.trades : 0,
+    netPnl: r.net_pnl,
+  }));
+}
+
+/** Start of the current UTC day, in epoch millis. */
+export function startOfUtcDay(now = Date.now()): number {
+  const d = new Date(now);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
 /** Trades opened since 00:00 UTC — enforces RiskLimits.maxTradesPerDay. */
 export function tradesOpenedToday(): number {
-  const startOfDay = new Date();
-  startOfDay.setUTCHours(0, 0, 0, 0);
   return (
     db
       .prepare(`SELECT COUNT(*) AS n FROM trades WHERE opened_at >= ?`)
-      .get(startOfDay.getTime()) as { n: number }
+      .get(startOfUtcDay()) as { n: number }
   ).n;
 }
 
-export function openTrades(): Trade[] {
+/** Realised P&L for trades CLOSED since 00:00 UTC — drives the circuit breaker. */
+export function realisedPnlToday(): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(pnl), 0) AS total FROM trades
+       WHERE status = 'Filled' AND closed_at >= ?`,
+    )
+    .get(startOfUtcDay()) as { total: number };
+  return row.total;
+}
+
+/** Number of losing trades at the tail of the closed-trade history. */
+export function consecutiveLosses(): number {
   const rows = db
-    .prepare(`SELECT * FROM trades WHERE closed_at IS NULL AND status = 'Open'`)
-    .all() as TradeRow[];
-  return rows.map(toTrade);
+    .prepare(
+      `SELECT pnl FROM trades WHERE status = 'Filled' AND closed_at IS NOT NULL
+       ORDER BY closed_at DESC LIMIT 50`,
+    )
+    .all() as Array<{ pnl: number }>;
+
+  let streak = 0;
+  for (const row of rows) {
+    if (row.pnl < 0) streak += 1;
+    else break;
+  }
+  return streak;
 }

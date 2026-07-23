@@ -35,6 +35,10 @@ export class BybitExchange {
   private ws: WebsocketClient | null = null;
   private lastLatencyMs: number | null = null;
   private tickerHandlers = new Set<(symbol: string, price: number) => void>();
+  private credentialsChecked = false;
+  private credentialsOk = false;
+  /** Latest price per symbol from the ticker stream. */
+  private marks = new Map<string, number>();
 
   constructor() {
     this.rest = new RestClientV5({
@@ -52,6 +56,16 @@ export class BybitExchange {
     return this.lastLatencyMs;
   }
 
+  /** True only once credentials have been presented AND accepted. */
+  get credentialsValid(): boolean {
+    return this.credentialsOk;
+  }
+
+  /** Live mark prices from the ticker stream, keyed by symbol. */
+  get markPrices(): Map<string, number> {
+    return new Map(this.marks);
+  }
+
   /** Round-trips the public time endpoint and records latency. */
   async ping(): Promise<number> {
     const start = Date.now();
@@ -62,17 +76,66 @@ export class BybitExchange {
 
   /** Verifies the credentials actually work, not just that they are present. */
   async verifyCredentials(): Promise<boolean> {
-    if (!this.configured) return false;
+    if (!this.configured) {
+      this.credentialsChecked = true;
+      this.credentialsOk = false;
+      return false;
+    }
+
     try {
       const res = await this.rest.getWalletBalance({ accountType: "UNIFIED" });
-      if (res.retCode !== 0) {
-        logger.error(`Bybit rejected credentials: ${res.retMsg}`);
-        return false;
-      }
-      return true;
+      this.credentialsChecked = true;
+      this.credentialsOk = res.retCode === 0;
+      if (!this.credentialsOk) logger.error(`Bybit rejected credentials: ${res.retMsg}`);
+      return this.credentialsOk;
     } catch (err) {
+      this.credentialsChecked = true;
+      this.credentialsOk = false;
       logger.error(`Bybit credential check failed: ${(err as Error).message}`);
       return false;
+    }
+  }
+
+  get credentialsChecked_(): boolean {
+    return this.credentialsChecked;
+  }
+
+  /** Raw instrument rules for linear perpetuals. Public endpoint. */
+  async getInstruments(): Promise<
+    Array<{
+      symbol: string;
+      priceFilter?: { tickSize?: string };
+      lotSizeFilter?: {
+        qtyStep?: string;
+        minOrderQty?: string;
+        maxOrderQty?: string;
+        minNotionalValue?: string;
+      };
+      leverageFilter?: { maxLeverage?: string };
+    }>
+  > {
+    const res = await this.rest.getInstrumentsInfo({ category: "linear", limit: 1000 });
+    if (res.retCode !== 0) throw new Error(`getInstrumentsInfo: ${res.retMsg}`);
+    return (res.result.list ?? []) as never;
+  }
+
+  /**
+   * Moves the stop-loss on an existing position — used by the trailing stop.
+   * No-op in paper mode, where the stop lives only in our own trade row.
+   */
+  async setStopLoss(symbol: string, stopLoss: number): Promise<void> {
+    if (!config.tradingEnabled || !this.configured) return;
+
+    const res = await this.rest.setTradingStop({
+      category: "linear",
+      symbol,
+      stopLoss: String(stopLoss),
+      positionIdx: 0,
+    });
+
+    // 34040 = "not modified": the stop is already at this level. Harmless.
+    if (res.retCode !== 0 && res.retCode !== 34040) {
+      logger.warn(`setTradingStop(${symbol}): ${res.retMsg}`);
     }
   }
 
@@ -279,6 +342,9 @@ export class BybitExchange {
       if (!symbol || !lastPrice) return;
 
       const price = Number(lastPrice);
+      if (!Number.isFinite(price)) return;
+
+      this.marks.set(symbol, price);
       for (const handler of this.tickerHandlers) handler(symbol, price);
     });
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { EquityPoint, PerformanceStats, Trade, TradeStatus } from "@ztrade/shared";
-import { api, ApiError } from "../lib/api";
+import { api, ApiError, exportCsvUrl } from "../lib/api";
 import { EmptyState, ErrorBanner, Metric, Panel } from "../components/Ui";
 import { EquityChart } from "../components/EquityChart";
 import { Icon } from "../components/Shell";
@@ -99,6 +99,26 @@ export function TradeHistory() {
         />
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          label="Expectancy"
+          value={stats ? signedUsd(stats.expectancy) : "—"}
+          hint="Expected value per trade"
+          valueClassName={stats && stats.expectancy >= 0 ? "text-primary" : "text-error"}
+        />
+        <Metric label="Total Fees" value={stats ? usd(stats.totalFees) : "—"} />
+        <Metric
+          label="Longest Win Streak"
+          value={stats ? String(stats.longestWinStreak) : "—"}
+          valueClassName="text-primary"
+        />
+        <Metric
+          label="Longest Loss Streak"
+          value={stats ? String(stats.longestLossStreak) : "—"}
+          valueClassName="text-error"
+        />
+      </div>
+
       <Panel
         title="Cumulative P&L Performance"
         actions={
@@ -131,7 +151,7 @@ export function TradeHistory() {
         actions={
           <a
             className="btn-outline"
-            href={api.exportCsvUrl({ status, from })}
+            href={exportCsvUrl({ status, from })}
             download
           >
             <Icon name="download" className="text-[14px]" /> Export CSV

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import type { AccountSnapshot, EngineStatus } from "@ztrade/shared";
+import type { LiveFeed } from "../lib/useLiveFeed";
 import { pct, usd } from "../lib/format";
 
 interface NavItem {
@@ -31,15 +31,12 @@ export function Icon({ name, className = "" }: { name: string; className?: strin
   );
 }
 
-interface ShellProps {
-  status: EngineStatus | null;
-  account: AccountSnapshot | null;
-  connected: boolean;
-}
-
-export function Shell({ status, account, connected }: ShellProps) {
+export function Shell({ feed }: { feed: LiveFeed }) {
+  const { status, account, connected, circuitBreaker } = feed;
   const exchangeOnline = Boolean(status?.exchangeConnected);
   const network = status?.network ?? "TESTNET";
+  const paper = status ? !status.tradingEnabled : true;
+  const breaker = circuitBreaker ?? status?.circuitBreaker ?? null;
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -50,7 +47,7 @@ export function Shell({ status, account, connected }: ShellProps) {
             ZTrade
           </div>
           <div className="mt-1 font-mono text-[10px] uppercase tracking-widest text-outline">
-            v0.1.0-dev
+            v0.2.0-dev
           </div>
         </div>
 
@@ -75,8 +72,9 @@ export function Shell({ status, account, connected }: ShellProps) {
           ))}
         </nav>
 
-        <div className="border-t border-outline-variant p-4">
+        <div className="flex flex-col gap-2 border-t border-outline-variant p-4">
           <NetworkBadge network={network} />
+          <ModeBadge paper={paper} />
         </div>
       </aside>
 
@@ -91,7 +89,7 @@ export function Shell({ status, account, connected }: ShellProps) {
             <span
               className={[
                 "h-2 w-2 rounded-full",
-                exchangeOnline ? "bg-primary animate-pulse-dot" : "bg-error",
+                exchangeOnline ? "animate-pulse-dot bg-primary" : "bg-error",
               ].join(" ")}
             />
             <span className="font-mono text-xs text-on-surface-variant">
@@ -128,11 +126,26 @@ export function Shell({ status, account, connected }: ShellProps) {
             >
               {connected ? "● LIVE" : "○ OFFLINE"}
             </span>
-            <div className="lg:hidden">
+            <div className="flex items-center gap-2 lg:hidden">
+              <ModeBadge paper={paper} />
               <NetworkBadge network={network} />
             </div>
           </div>
         </header>
+
+        {/* Halting the bot is important enough to sit above every screen. */}
+        {breaker?.tripped && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-error bg-error-container px-4 py-2.5 font-mono text-xs text-on-error-container">
+            <Icon name="block" className="text-[16px]" />
+            <span className="font-semibold">CIRCUIT BREAKER TRIPPED</span>
+            <span>— {breaker.reason}</span>
+            {breaker.resumeAt && (
+              <span className="text-[11px] opacity-80">
+                resumes {new Date(breaker.resumeAt).toLocaleTimeString("en-GB", { hour12: false })}
+              </span>
+            )}
+          </div>
+        )}
 
         <main className="flex-1 p-4 pb-24 lg:p-6 lg:pb-6">
           <Outlet />
@@ -172,14 +185,35 @@ function NetworkBadge({ network }: { network: string }) {
           ? "border-error bg-error-container text-on-error-container"
           : "border-outline-variant text-on-surface-variant",
       ].join(" ")}
-      title={
-        isMainnet
-          ? "Trading against REAL funds"
-          : "Testnet — no real funds at risk"
-      }
+      title={isMainnet ? "Trading against REAL funds" : "Testnet — no real funds at risk"}
     >
       <Icon name={isMainnet ? "warning" : "science"} className="text-[12px]" />
       {network}
+    </span>
+  );
+}
+
+/**
+ * Paper vs live is the single most important thing to get wrong, so it is
+ * always on screen rather than buried in Settings.
+ */
+function ModeBadge({ paper }: { paper: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-flex items-center gap-1.5 border px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-widest",
+        paper
+          ? "border-outline-variant text-on-surface-variant"
+          : "border-secondary-container text-secondary-container",
+      ].join(" ")}
+      title={
+        paper
+          ? "Paper mode — fills are simulated, no orders are sent"
+          : "Live orders are being sent to the exchange"
+      }
+    >
+      <Icon name={paper ? "draw" : "bolt"} className="text-[12px]" />
+      {paper ? "Paper" : "Live"}
     </span>
   );
 }

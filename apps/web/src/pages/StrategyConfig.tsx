@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import type { BacktestResult, StrategyConfig, StrategyKind } from "@ztrade/shared";
+import type {
+  BacktestResult,
+  SizingMode,
+  StrategyConfig,
+  StrategyKind,
+} from "@ztrade/shared";
+import { defaultRiskLimits } from "@ztrade/shared";
 import { api, ApiError } from "../lib/api";
 import { Badge, ErrorBanner, Panel } from "../components/Ui";
 import { Icon } from "../components/Shell";
@@ -12,19 +18,31 @@ const KINDS: Array<{ value: StrategyKind; label: string; blurb: string }> = [
   { value: "CUSTOM", label: "Custom Script", blurb: "Not implemented — needs a sandbox" },
 ];
 
+const SIZING: Array<{ value: SizingMode; label: string; blurb: string }> = [
+  {
+    value: "FIXED_NOTIONAL",
+    label: "Fixed",
+    blurb: "Always the same position value",
+  },
+  {
+    value: "PERCENT_EQUITY",
+    label: "% Equity",
+    blurb: "Scales with the account balance",
+  },
+  {
+    value: "RISK_BASED",
+    label: "Risk-based",
+    blurb: "Constant money at risk; tighter stop buys a bigger position",
+  },
+];
+
 const BLANK: Omit<StrategyConfig, "updatedAt"> = {
   id: "",
   name: "New Strategy",
   kind: "MOMENTUM",
   enabled: false,
   pairs: ["BTCUSDT"],
-  risk: {
-    maxPositionSize: 100,
-    stopLossPct: 2,
-    takeProfitPct: 4,
-    maxTradesPerDay: 10,
-    globalRiskCap: 500,
-  },
+  risk: { ...defaultRiskLimits },
   params: { interval: "5" },
 };
 
@@ -77,7 +95,7 @@ export function StrategyConfigPage() {
     setError(null);
     setNotice(null);
     try {
-      const saved = await api.saveStrategy({ ...draft, id: draft.id || undefined } as never);
+      const saved = await api.saveStrategy({ ...draft, id: draft.id || undefined });
       setDraft(saved);
       await reload();
       setNotice(
@@ -288,6 +306,107 @@ export function StrategyConfigPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            <div className="mt-5 border-t border-outline-variant pt-4">
+              <span className="field-label">Position Sizing</span>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {SIZING.map((mode) => {
+                  const selected = draft.risk.sizingMode === mode.value;
+                  return (
+                    <button
+                      key={mode.value}
+                      onClick={() =>
+                        setDraft((d) => ({
+                          ...d,
+                          risk: { ...d.risk, sizingMode: mode.value },
+                        }))
+                      }
+                      className={`border p-3 text-left transition-colors ${
+                        selected
+                          ? "border-primary bg-surface-container"
+                          : "border-outline-variant hover:border-outline"
+                      }`}
+                    >
+                      <div
+                        className={`font-mono text-xs uppercase tracking-wider ${
+                          selected ? "text-primary" : "text-on-surface"
+                        }`}
+                      >
+                        {mode.label}
+                      </div>
+                      <div className="mt-1 text-[11px] text-on-surface-variant">
+                        {mode.blurb}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                {draft.risk.sizingMode === "PERCENT_EQUITY" && (
+                  <div>
+                    <label className="field-label" htmlFor="equity-pct">
+                      Equity per Trade (%)
+                    </label>
+                    <input
+                      id="equity-pct"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      className="field"
+                      value={draft.risk.equityPct}
+                      onChange={(e) => patchRisk("equityPct", e.target.value)}
+                    />
+                  </div>
+                )}
+
+                {draft.risk.sizingMode === "RISK_BASED" && (
+                  <div>
+                    <label className="field-label" htmlFor="risk-pct">
+                      Risk per Trade (%)
+                    </label>
+                    <input
+                      id="risk-pct"
+                      type="number"
+                      min="0.1"
+                      step="0.1"
+                      className="field"
+                      value={draft.risk.riskPerTradePct}
+                      onChange={(e) => patchRisk("riskPerTradePct", e.target.value)}
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="field-label" htmlFor="trailing">
+                    Trailing Stop (%) — 0 = off
+                  </label>
+                  <input
+                    id="trailing"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    className="field"
+                    value={draft.risk.trailingStopPct}
+                    onChange={(e) => patchRisk("trailingStopPct", e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="field-label" htmlFor="max-open">
+                    Max Open Positions
+                  </label>
+                  <input
+                    id="max-open"
+                    type="number"
+                    min="1"
+                    className="field"
+                    value={draft.risk.maxOpenPositions}
+                    onChange={(e) => patchRisk("maxOpenPositions", e.target.value)}
+                  />
+                </div>
               </div>
             </div>
 

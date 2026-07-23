@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { StrategyConfig } from "@ztrade/shared";
+import { defaultRiskLimits } from "@ztrade/shared";
 import { listStrategies, upsertStrategy } from "./db.js";
 import { logger } from "./bus.js";
 
@@ -17,13 +18,7 @@ export function seedDefaultStrategy(): void {
     kind: "MOMENTUM",
     enabled: false,
     pairs: ["BTCUSDT", "ETHUSDT"],
-    risk: {
-      maxPositionSize: 100,
-      stopLossPct: 2,
-      takeProfitPct: 4,
-      maxTradesPerDay: 10,
-      globalRiskCap: 500,
-    },
+    risk: { ...defaultRiskLimits },
     params: {
       interval: "5",
       fastPeriod: 12,

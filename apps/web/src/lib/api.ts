@@ -1,15 +1,21 @@
 import type {
+  AuditEntry,
   BacktestResult,
+  CircuitBreakerConfig,
+  CircuitBreakerState,
   DashboardSnapshot,
   EngineStatus,
   EquityPoint,
   LogEntry,
   PerformanceStats,
+  Position,
   Settings,
   StrategyConfig,
+  SymbolStats,
   Trade,
   TradeStatus,
 } from "@ztrade/shared";
+import { getToken } from "./auth";
 
 export class ApiError extends Error {
   constructor(
@@ -21,10 +27,24 @@ export class ApiError extends Error {
   }
 }
 
+/** Raised on 401 so the UI can prompt for the token instead of showing an error. */
+export class UnauthorisedError extends ApiError {
+  constructor(message: string) {
+    super(message, 401);
+    this.name = "UnauthorisedError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
 
   if (!res.ok) {
@@ -35,6 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // Non-JSON error body; the status line is the best we have.
     }
+    if (res.status === 401) throw new UnauthorisedError(message);
     throw new ApiError(message, res.status);
   }
 
@@ -65,6 +86,9 @@ function query(params: object): string {
 }
 
 export const api = {
+  /** Cheapest authenticated call — used to validate a freshly entered token. */
+  verifyToken: () => request<EngineStatus>("/api/status"),
+
   dashboard: () => request<DashboardSnapshot>("/api/dashboard"),
   status: () => request<EngineStatus>("/api/status"),
 
@@ -76,8 +100,26 @@ export const api = {
       body: JSON.stringify({ confirm: "CLOSE_ALL" }),
     }),
 
+  positions: () => request<{ exchange: Position[]; open: Trade[] }>("/api/positions"),
+  closePosition: (symbol: string) =>
+    request<{ ok: boolean }>(`/api/positions/${symbol}/close`, { method: "POST" }),
+
+  circuitBreaker: () =>
+    request<{ config: CircuitBreakerConfig; state: CircuitBreakerState }>(
+      "/api/circuit-breaker",
+    ),
+  saveCircuitBreaker: (body: CircuitBreakerConfig) =>
+    request<{ ok: boolean }>("/api/circuit-breaker", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  resetCircuitBreaker: () =>
+    request<{ ok: boolean; state: CircuitBreakerState }>("/api/circuit-breaker/reset", {
+      method: "POST",
+    }),
+
   strategies: () => request<StrategyConfig[]>("/api/strategies"),
-  saveStrategy: (s: Omit<StrategyConfig, "updatedAt">) =>
+  saveStrategy: (s: Omit<StrategyConfig, "updatedAt" | "id"> & { id?: string }) =>
     request<StrategyConfig>("/api/strategies", {
       method: "POST",
       body: JSON.stringify(s),
@@ -96,11 +138,15 @@ export const api = {
     request<{ trades: Trade[]; total: number }>(`/api/trades${query({ ...params })}`),
   stats: (params: { from?: number; to?: number } = {}) =>
     request<PerformanceStats>(`/api/stats${query(params)}`),
+  symbolStats: (params: { from?: number; to?: number } = {}) =>
+    request<SymbolStats[]>(`/api/stats/symbols${query(params)}`),
   equity: (params: { from?: number; to?: number } = {}) =>
     request<EquityPoint[]>(`/api/equity${query(params)}`),
-  exportCsvUrl: (params: TradeQueryParams = {}) => `/api/trades/export.csv${query(params)}`,
 
   logs: (limit = 200) => request<LogEntry[]>(`/api/logs${query({ limit })}`),
+  audit: (limit = 100) => request<AuditEntry[]>(`/api/audit${query({ limit })}`),
+  summaryPreview: (hours = 24) =>
+    request<{ text: string }>(`/api/summary/preview${query({ hours })}`),
 
   settings: () => request<Settings>("/api/settings"),
   saveTelegram: (body: unknown) =>
@@ -121,3 +167,12 @@ export const api = {
       { method: "POST" },
     ),
 };
+
+/**
+ * CSV export is a plain navigation, so it cannot carry an Authorization header.
+ * The token rides as a query parameter instead — the same escape hatch the
+ * server allows for the WebSocket handshake.
+ */
+export function exportCsvUrl(params: TradeQueryParams = {}): string {
+  return `/api/trades/export.csv${query({ ...params, token: getToken() ?? undefined })}`;
+}

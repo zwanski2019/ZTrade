@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  defaultRiskLimits,
   maskSecret,
+  type CircuitBreakerConfig,
   type DashboardSnapshot,
   type Settings,
   type StrategyConfig,
@@ -13,12 +15,12 @@ import { config } from "../config.js";
 import { logger, recentLogs } from "../bus.js";
 import { engine } from "../engine/engine.js";
 import { runBacktest } from "../engine/backtest.js";
+import { circuitBreaker } from "../engine/circuitBreaker.js";
 import { exchange } from "../exchange/bybit.js";
-import {
-  defaultTelegramSettings,
-  notifier,
-  TELEGRAM_SETTINGS_KEY,
-} from "../notify/telegram.js";
+import { cachedInstrument } from "../exchange/instruments.js";
+import { buildSummary } from "../notify/scheduler.js";
+import { notifier } from "../notify/telegram.js";
+import { actorOf, audit, auditFromRequest, AuditAction, listAudit } from "../security/audit.js";
 import {
   deleteStrategy,
   equityCurve,
@@ -26,11 +28,13 @@ import {
   getStrategy,
   listStrategies,
   listTrades,
+  openTrades,
   performanceStats,
   recentSignals,
   recentTrades,
   setActiveStrategy,
   setSetting,
+  symbolStats,
   upsertStrategy,
 } from "../db.js";
 
@@ -40,16 +44,31 @@ const riskSchema = z.object({
   takeProfitPct: z.number().positive().max(1000),
   maxTradesPerDay: z.number().int().nonnegative(),
   globalRiskCap: z.number().positive(),
+  sizingMode: z
+    .enum(["FIXED_NOTIONAL", "PERCENT_EQUITY", "RISK_BASED"])
+    .default("FIXED_NOTIONAL"),
+  equityPct: z.number().positive().max(100).default(5),
+  riskPerTradePct: z.number().positive().max(100).default(1),
+  trailingStopPct: z.number().nonnegative().max(100).default(0),
+  maxOpenPositions: z.number().int().nonnegative().max(50).default(3),
 });
 
 const strategySchema = z.object({
-  id: z.string().optional(),
+  id: z.string().uuid().optional(),
   name: z.string().min(1).max(120),
   kind: z.enum(["MOMENTUM", "MEAN_REVERSION", "GRID", "CUSTOM"]),
   enabled: z.boolean().default(false),
-  pairs: z.array(z.string().regex(/^[A-Z0-9]{4,20}$/)).min(1),
+  pairs: z.array(z.string().regex(/^[A-Z0-9]{4,20}$/)).min(1).max(25),
   risk: riskSchema,
   params: z.record(z.union([z.number(), z.string(), z.boolean()])).default({}),
+});
+
+const circuitBreakerSchema = z.object({
+  enabled: z.boolean(),
+  maxDailyLossPct: z.number().nonnegative().max(100),
+  maxConsecutiveLosses: z.number().int().nonnegative().max(100),
+  cooldownMinutes: z.number().int().nonnegative().max(10_080),
+  flattenOnTrip: z.boolean(),
 });
 
 const UI_SETTINGS_KEY = "ui";
@@ -60,27 +79,25 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   // Health & status
   // -------------------------------------------------------------------------
 
-  app.get("/api/health", async () => ({
-    ok: true,
-    network: config.network,
-    tradingEnabled: config.tradingEnabled,
-  }));
+  /** Public (no auth) — deliberately exposes nothing beyond liveness. */
+  app.get("/api/health", async () => ({ ok: true }));
 
   app.get("/api/status", async () => engine.getStatus());
 
   /** Everything the dashboard needs on first paint. */
   app.get("/api/dashboard", async (): Promise<DashboardSnapshot> => {
-    const stats = performanceStats();
+    const positions = engine.getPositions();
     return {
       status: engine.getStatus(),
       account:
         engine.getAccount() ??
         { equity: 0, availableBalance: 0, pnlPct: 0, unrealisedPnl: 0 },
       position: engine.getPrimaryPosition(),
+      positions,
       signals: recentSignals(20),
       recentTrades: recentTrades(10),
       equityCurve: equityCurve(Date.now() - 30 * 24 * 60 * 60 * 1000),
-      stats,
+      stats: performanceStats(),
     };
   });
 
@@ -88,15 +105,15 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   // Engine control
   // -------------------------------------------------------------------------
 
-  app.post("/api/engine/start", async (_req, reply) => {
-    await engine.start();
+  app.post("/api/engine/start", async (req, reply) => {
+    await engine.start(actorOf(req));
     const status = engine.getStatus();
     if (status.state === "ERROR") return reply.code(409).send(status);
     return status;
   });
 
-  app.post("/api/engine/stop", async () => {
-    await engine.stop();
+  app.post("/api/engine/stop", async (req) => {
+    await engine.stop(actorOf(req));
     return engine.getStatus();
   });
 
@@ -113,8 +130,53 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const result = await engine.emergencyStop();
+    const result = await engine.emergencyStop(actorOf(req));
     return { ...result, status: engine.getStatus() };
+  });
+
+  /** Closes a single symbol. */
+  app.post("/api/positions/:symbol/close", async (req, reply) => {
+    const { symbol } = z
+      .object({ symbol: z.string().regex(/^[A-Z0-9]{4,20}$/) })
+      .parse(req.params);
+
+    const closed = await engine.closePosition(symbol, actorOf(req));
+    if (!closed) {
+      return reply.code(404).send({ error: `No open position on ${symbol}` });
+    }
+    return { ok: true, symbol };
+  });
+
+  app.get("/api/positions", async () => ({
+    exchange: engine.getPositions(),
+    open: openTrades(),
+  }));
+
+  // -------------------------------------------------------------------------
+  // Circuit breaker
+  // -------------------------------------------------------------------------
+
+  app.get("/api/circuit-breaker", async () => ({
+    config: circuitBreaker.config,
+    state: circuitBreaker.getState(engine.getAccount()?.equity ?? 0),
+  }));
+
+  app.put("/api/circuit-breaker", async (req, reply) => {
+    const parsed = circuitBreakerSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "Invalid circuit breaker config", issues: parsed.error.issues });
+    }
+
+    circuitBreaker.setConfig(parsed.data as CircuitBreakerConfig);
+    auditFromRequest(req, AuditAction.SETTINGS_UPDATE, "circuit breaker updated");
+    return { ok: true, config: circuitBreaker.config };
+  });
+
+  app.post("/api/circuit-breaker/reset", async (req) => {
+    circuitBreaker.reset(`manual reset by ${actorOf(req)}`);
+    return { ok: true, state: circuitBreaker.getState(engine.getAccount()?.equity ?? 0) };
   });
 
   // -------------------------------------------------------------------------
@@ -138,6 +200,7 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
 
     const strategy: StrategyConfig = {
       ...parsed.data,
+      risk: { ...defaultRiskLimits, ...parsed.data.risk },
       id: parsed.data.id ?? randomUUID(),
       updatedAt: Date.now(),
     };
@@ -147,15 +210,22 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     engine.reloadStrategy();
 
     logger.info(`Strategy saved: ${strategy.name} (${strategy.kind})`);
+    auditFromRequest(
+      req,
+      AuditAction.STRATEGY_SAVE,
+      `${strategy.name} (${strategy.kind}) armed=${strategy.enabled}`,
+    );
     return reply.code(201).send(strategy);
   });
 
   app.post("/api/strategies/:id/activate", async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (!getStrategy(id)) return reply.code(404).send({ error: "Strategy not found" });
+    const strategy = getStrategy(id);
+    if (!strategy) return reply.code(404).send({ error: "Strategy not found" });
 
     setActiveStrategy(id);
     engine.reloadStrategy();
+    auditFromRequest(req, AuditAction.STRATEGY_ACTIVATE, strategy.name);
     return { ok: true, activeStrategyId: id };
   });
 
@@ -171,6 +241,7 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     }
 
     deleteStrategy(id);
+    auditFromRequest(req, AuditAction.STRATEGY_DELETE, strategy.name);
     return { ok: true };
   });
 
@@ -181,9 +252,9 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
 
     const opts = z
       .object({
-        interval: z.string().optional(),
+        interval: z.string().regex(/^(1|3|5|15|30|60|120|240|360|720|D)$/).optional(),
         candles: z.number().int().min(50).max(1000).optional(),
-        startingEquity: z.number().positive().optional(),
+        startingEquity: z.number().positive().max(1e9).optional(),
       })
       .safeParse(req.body ?? {});
     if (!opts.success) {
@@ -224,11 +295,26 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     return performanceStats(q.from, q.to);
   });
 
+  app.get("/api/stats/symbols", async (req) => {
+    const q = z
+      .object({ from: z.coerce.number().optional(), to: z.coerce.number().optional() })
+      .parse(req.query);
+    return symbolStats(q.from, q.to);
+  });
+
   app.get("/api/equity", async (req) => {
     const q = z
       .object({ from: z.coerce.number().optional(), to: z.coerce.number().optional() })
       .parse(req.query);
     return equityCurve(q.from, q.to);
+  });
+
+  app.get("/api/summary/preview", async (req) => {
+    const q = z
+      .object({ hours: z.coerce.number().int().min(1).max(720).default(24) })
+      .parse(req.query);
+    const to = Date.now();
+    return { text: buildSummary(to - q.hours * 3_600_000, to) };
   });
 
   /** CSV export behind the Trade History screen's EXPORT CSV button. */
@@ -247,17 +333,22 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       limit: 10_000,
     });
 
-    const header = "time,pair,side,size,entry,exit,pnl,status";
+    const header =
+      "time,closed,pair,side,size,entry,exit,pnl,fees,status,reason,paper";
     const rows = trades.map((t) =>
       [
         new Date(t.openedAt).toISOString(),
+        t.closedAt ? new Date(t.closedAt).toISOString() : "",
         t.symbol,
         t.side,
         t.size,
         t.entryPrice,
         t.exitPrice ?? "",
-        t.pnl,
+        t.pnl.toFixed(4),
+        t.fees.toFixed(4),
         t.status,
+        t.closeReason ?? "",
+        t.paper ? "yes" : "no",
       ].join(","),
     );
 
@@ -267,7 +358,7 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
-  // Logs
+  // Logs & audit
   // -------------------------------------------------------------------------
 
   app.get("/api/logs", async (req) => {
@@ -275,6 +366,24 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       .object({ limit: z.coerce.number().int().min(1).max(500).default(200) })
       .parse(req.query);
     return recentLogs(limit);
+  });
+
+  app.get("/api/audit", async (req) => {
+    const { limit } = z
+      .object({ limit: z.coerce.number().int().min(1).max(500).default(100) })
+      .parse(req.query);
+    return listAudit(limit);
+  });
+
+  app.get("/api/instruments/:symbol", async (req, reply) => {
+    const { symbol } = z
+      .object({ symbol: z.string().regex(/^[A-Z0-9]{4,20}$/) })
+      .parse(req.params);
+    const info = cachedInstrument(symbol);
+    if (!info) {
+      return reply.code(404).send({ error: `No cached rules for ${symbol}` });
+    }
+    return info;
   });
 
   // -------------------------------------------------------------------------
@@ -287,19 +396,23 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
    * credentials that were configured server-side.
    */
   app.get("/api/settings", async (): Promise<Settings> => {
-    const telegram = getSetting(TELEGRAM_SETTINGS_KEY, defaultTelegramSettings);
+    const stored = notifier.raw();
     return {
       exchange: {
         network: config.network,
         apiKeyMasked: maskSecret(config.bybit.apiKey),
         hasSecret: Boolean(config.bybit.apiSecret),
+        credentialsValid: exchange.credentialsValid,
+        tradingEnabled: config.tradingEnabled,
       },
       telegram: {
-        ...telegram,
-        botToken: maskSecret(config.telegram.botToken ?? telegram.botToken),
-        chatId: config.telegram.chatId ?? telegram.chatId,
+        ...stored,
+        // Never send the token back, encrypted or not — only whether one exists.
+        botToken: stored.botToken || config.telegram.botToken ? "••••••••" : null,
+        chatId: config.telegram.chatId ?? stored.chatId,
       },
       ui: getSetting(UI_SETTINGS_KEY, defaultUiSettings),
+      circuitBreaker: circuitBreaker.config,
     };
   });
 
@@ -307,8 +420,8 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     const parsed = z
       .object({
         enabled: z.boolean(),
-        botToken: z.string().min(1).nullable().optional(),
-        chatId: z.string().min(1).nullable().optional(),
+        botToken: z.string().min(1).max(200).nullable().optional(),
+        chatId: z.string().min(1).max(64).nullable().optional(),
         notifyTradeOpened: z.boolean(),
         notifyTradeClosed: z.boolean(),
         notifyDailySummary: z.boolean(),
@@ -319,15 +432,17 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: "Invalid Telegram settings" });
     }
 
-    const existing = getSetting(TELEGRAM_SETTINGS_KEY, defaultTelegramSettings);
-    setSetting(TELEGRAM_SETTINGS_KEY, {
+    const existing = notifier.raw();
+    notifier.save({
       ...existing,
       ...parsed.data,
-      // Omitting a token in the payload keeps the stored one rather than nulling it.
+      // Omitting a token in the payload keeps the stored one rather than nulling
+      // it; the UI never receives the real value to send back.
       botToken: parsed.data.botToken ?? existing.botToken,
       chatId: parsed.data.chatId ?? existing.chatId,
     });
 
+    auditFromRequest(req, AuditAction.SETTINGS_UPDATE, "telegram settings updated");
     return { ok: true };
   });
 
@@ -361,6 +476,7 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
     }
     const ok = await exchange.verifyCredentials();
     const latency = await exchange.ping().catch(() => null);
+    if (!ok) audit(AuditAction.AUTH_FAILURE, "Bybit credential check failed");
     return { ok, latencyMs: latency, network: config.network };
   });
 }

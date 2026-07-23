@@ -11,6 +11,16 @@ export type OrderSide = "Buy" | "Sell";
 /** Lifecycle of a trade as shown in the Trade Log "Status" column. */
 export type TradeStatus = "Filled" | "Open" | "Cancelled" | "Rejected";
 
+/** Why a position left the book — drives analytics and the close notification. */
+export type CloseReason =
+  | "STOP_LOSS"
+  | "TAKE_PROFIT"
+  | "TRAILING_STOP"
+  | "SIGNAL"
+  | "MANUAL"
+  | "EMERGENCY"
+  | "EXCHANGE";
+
 /** Execution engine state — drives the RUNNING / STOP BOT controls. */
 export type EngineState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "ERROR";
 
@@ -18,6 +28,9 @@ export type EngineState = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "ERR
 export type Network = "TESTNET" | "MAINNET";
 
 export type StrategyKind = "MOMENTUM" | "MEAN_REVERSION" | "GRID" | "CUSTOM";
+
+/** How a position's size is derived. */
+export type SizingMode = "FIXED_NOTIONAL" | "PERCENT_EQUITY" | "RISK_BASED";
 
 // ---------------------------------------------------------------------------
 // Trading
@@ -36,12 +49,19 @@ export interface Trade {
   entryPrice: number;
   /** Null while the position is still open. */
   exitPrice: number | null;
-  /** Realised P&L in quote currency. Zero for cancelled trades. */
+  /** Realised P&L in quote currency, net of fees. Zero for cancelled trades. */
   pnl: number;
+  /** Total fees paid across entry and exit. */
+  fees: number;
   status: TradeStatus;
+  closeReason: CloseReason | null;
   strategyId: string | null;
   /** Bybit order id, when the trade reached the exchange. */
   exchangeOrderId: string | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  /** True when this trade was simulated rather than sent to the exchange. */
+  paper: boolean;
 }
 
 export interface Position {
@@ -71,6 +91,25 @@ export interface Signal {
   confidence: number;
   /** True when the signal actually resulted in an order. */
   acted: boolean;
+  /** Why the signal was skipped, when acted is false. */
+  skippedReason: string | null;
+}
+
+/**
+ * Exchange-published trading rules for one instrument.
+ *
+ * Order quantities must be a multiple of qtyStep and clear both minOrderQty and
+ * minNotional, or Bybit rejects the order outright.
+ */
+export interface InstrumentInfo {
+  symbol: string;
+  tickSize: number;
+  qtyStep: number;
+  minOrderQty: number;
+  maxOrderQty: number;
+  /** Minimum order value in quote currency. */
+  minNotional: number;
+  maxLeverage: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +127,18 @@ export interface RiskLimits {
   maxTradesPerDay: number;
   /** Global ceiling on total simultaneous risk, in quote currency. */
   globalRiskCap: number;
+
+  /** How position size is derived. Defaults to FIXED_NOTIONAL. */
+  sizingMode: SizingMode;
+  /** For PERCENT_EQUITY: fraction of equity per position, e.g. 5 === 5%. */
+  equityPct: number;
+  /** For RISK_BASED: percent of equity risked between entry and stop. */
+  riskPerTradePct: number;
+
+  /** Trailing stop distance as a percentage; 0 disables trailing. */
+  trailingStopPct: number;
+  /** Max concurrent open positions across all symbols. */
+  maxOpenPositions: number;
 }
 
 export interface StrategyConfig {
@@ -101,6 +152,34 @@ export interface StrategyConfig {
   /** Free-form knobs specific to the strategy kind (period, threshold, ...). */
   params: Record<string, number | string | boolean>;
   updatedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker — account-level fail-safes above per-trade risk
+// ---------------------------------------------------------------------------
+
+export interface CircuitBreakerConfig {
+  enabled: boolean;
+  /** Halt if realised loss today exceeds this percent of starting equity. */
+  maxDailyLossPct: number;
+  /** Halt after this many consecutive losing trades. 0 disables. */
+  maxConsecutiveLosses: number;
+  /** Minutes to stay halted once tripped. */
+  cooldownMinutes: number;
+  /** Also flatten open positions when tripped, not just stop opening new ones. */
+  flattenOnTrip: boolean;
+}
+
+export interface CircuitBreakerState {
+  tripped: boolean;
+  reason: string | null;
+  trippedAt: number | null;
+  /** Epoch millis the cooldown expires; null when not tripped. */
+  resumeAt: number | null;
+  consecutiveLosses: number;
+  realisedPnlToday: number;
+  /** Equity at the start of the current UTC day, used for the loss percentage. */
+  dayStartEquity: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +197,18 @@ export interface PerformanceStats {
   totalTrades: number;
   netPnl: number;
   maxDrawdown: number;
+  totalFees: number;
+  /** Longest run of consecutive wins and losses. */
+  longestWinStreak: number;
+  longestLossStreak: number;
+  expectancy: number;
+}
+
+export interface SymbolStats {
+  symbol: string;
+  trades: number;
+  winRate: number;
+  netPnl: number;
 }
 
 export interface EquityPoint {
@@ -150,11 +241,23 @@ export interface LogEntry {
   message: string;
 }
 
+/** Immutable record of a security- or money-relevant action. */
+export interface AuditEntry {
+  id: string;
+  at: number;
+  action: string;
+  detail: string;
+  /** Source IP, when the action arrived over HTTP. */
+  actor: string | null;
+}
+
 export interface EngineStatus {
   state: EngineState;
   network: Network;
-  /** True once the Bybit REST/WS clients have authenticated. */
+  /** True once market data is flowing from Bybit. */
   exchangeConnected: boolean;
+  /** True when API credentials are present AND accepted. */
+  credentialsValid: boolean;
   /** Round-trip latency to Bybit in milliseconds; null when disconnected. */
   latencyMs: number | null;
   activeStrategyId: string | null;
@@ -164,6 +267,10 @@ export interface EngineStatus {
   startedAt: number | null;
   /** Populated when state === "ERROR". */
   error: string | null;
+  /** False when the engine is in paper mode. */
+  tradingEnabled: boolean;
+  circuitBreaker: CircuitBreakerState;
+  openPositionCount: number;
 }
 
 export interface AccountSnapshot {
@@ -195,6 +302,8 @@ export interface ExchangeSettings {
   /** Masked on the wire, e.g. "abcd••••••wxyz". */
   apiKeyMasked: string | null;
   hasSecret: boolean;
+  credentialsValid: boolean;
+  tradingEnabled: boolean;
 }
 
 export interface UiSettings {
@@ -205,6 +314,7 @@ export interface Settings {
   exchange: ExchangeSettings;
   telegram: TelegramSettings;
   ui: UiSettings;
+  circuitBreaker: CircuitBreakerConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,9 +325,11 @@ export type ServerEvent =
   | { type: "status"; payload: EngineStatus }
   | { type: "account"; payload: AccountSnapshot }
   | { type: "position"; payload: Position | null }
+  | { type: "positions"; payload: Position[] }
   | { type: "signal"; payload: Signal }
   | { type: "trade"; payload: Trade }
   | { type: "log"; payload: LogEntry }
+  | { type: "circuitBreaker"; payload: CircuitBreakerState }
   | { type: "heartbeat"; payload: { at: number; latencyMs: number | null } };
 
 /** Everything the dashboard needs on first paint, in one round trip. */
@@ -225,6 +337,7 @@ export interface DashboardSnapshot {
   status: EngineStatus;
   account: AccountSnapshot;
   position: Position | null;
+  positions: Position[];
   signals: Signal[];
   recentTrades: Trade[];
   equityCurve: EquityPoint[];
@@ -237,3 +350,24 @@ export function maskSecret(value: string | null | undefined): string | null {
   if (value.length <= 8) return "•".repeat(value.length);
   return `${value.slice(0, 4)}${"•".repeat(6)}${value.slice(-4)}`;
 }
+
+export const defaultRiskLimits: RiskLimits = {
+  maxPositionSize: 100,
+  stopLossPct: 2,
+  takeProfitPct: 4,
+  maxTradesPerDay: 10,
+  globalRiskCap: 500,
+  sizingMode: "FIXED_NOTIONAL",
+  equityPct: 5,
+  riskPerTradePct: 1,
+  trailingStopPct: 0,
+  maxOpenPositions: 3,
+};
+
+export const defaultCircuitBreaker: CircuitBreakerConfig = {
+  enabled: true,
+  maxDailyLossPct: 5,
+  maxConsecutiveLosses: 4,
+  cooldownMinutes: 60,
+  flattenOnTrip: false,
+};

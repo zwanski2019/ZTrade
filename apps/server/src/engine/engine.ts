@@ -1,5 +1,6 @@
 import type {
   AccountSnapshot,
+  CloseReason,
   EngineState,
   EngineStatus,
   Position,
@@ -10,14 +11,25 @@ import { config } from "../config.js";
 import { bus, logger } from "../bus.js";
 import { exchange, NotConfiguredError } from "../exchange/bybit.js";
 import {
+  instrumentOrFallback,
+  isStale,
+  loadInstruments,
+} from "../exchange/instruments.js";
+import {
   getActiveStrategy,
   insertSignal,
   insertTrade,
+  markSignalActed,
+  openTradeForSymbol,
+  openTrades,
   recordEquity,
 } from "../db.js";
 import { getStrategyImpl } from "../strategies/index.js";
-import { assessRisk, protectivePrices, quantityFor } from "./risk.js";
+import { assessRisk, protectivePrices, roundToTick } from "./risk.js";
+import { circuitBreaker } from "./circuitBreaker.js";
+import { netPnl, reconciler } from "./reconciler.js";
 import { notifier } from "../notify/telegram.js";
+import { audit, AuditAction } from "../security/audit.js";
 
 const TICK_INTERVAL_MS = 15_000;
 const HEARTBEAT_INTERVAL_MS = 5_000;
@@ -29,6 +41,8 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const LATENCY_WARN_MS = 1_000;
 /** Candles fetched per evaluation — enough to warm up the slowest indicator. */
 const CANDLE_LOOKBACK = 200;
+/** Starting equity assumed for paper mode when there is no real account. */
+const PAPER_STARTING_EQUITY = 10_000;
 
 class ExecutionEngine {
   private state: EngineState = "STOPPED";
@@ -42,6 +56,8 @@ class ExecutionEngine {
   private cachedPositions: Position[] = [];
   /** Guards against a slow tick overlapping the next scheduled one. */
   private ticking = false;
+  /** Simulated realised equity for paper mode. */
+  private paperEquity = PAPER_STARTING_EQUITY;
 
   getStatus(): EngineStatus {
     // Reflect the armed strategy even while stopped — the operator arms it on
@@ -51,13 +67,19 @@ class ExecutionEngine {
     return {
       state: this.state,
       network: config.network,
-      exchangeConnected: exchange.configured && exchange.latencyMs !== null,
+      // Market data flowing is the honest meaning of "connected": the engine
+      // works on public data alone, so this must not require credentials.
+      exchangeConnected: exchange.latencyMs !== null,
+      credentialsValid: exchange.credentialsValid,
       latencyMs: exchange.latencyMs,
       activeStrategyId: strategy?.id ?? null,
       activeStrategyName: strategy?.name ?? null,
       lastHeartbeat: this.lastHeartbeat,
       startedAt: this.startedAt,
       error: this.lastError,
+      tradingEnabled: config.tradingEnabled,
+      circuitBreaker: circuitBreaker.getState(this.cachedAccount?.equity ?? 0),
+      openPositionCount: openTrades().length,
     };
   }
 
@@ -80,7 +102,7 @@ class ExecutionEngine {
     bus.emitEvent({ type: "status", payload: this.getStatus() });
   }
 
-  async start(): Promise<void> {
+  async start(actor: string | null = null): Promise<void> {
     if (this.state === "RUNNING" || this.state === "STARTING") {
       logger.warn("Engine already running — ignoring start request");
       return;
@@ -107,6 +129,12 @@ class ExecutionEngine {
       return;
     }
 
+    // Trading rules must be loaded BEFORE any sizing happens — quantities based
+    // on a guessed step size get rejected by the exchange.
+    if (isStale()) {
+      await loadInstruments(() => exchange.getInstruments(), strategy.pairs);
+    }
+
     if (exchange.configured) {
       const ok = await exchange.verifyCredentials();
       if (!ok) {
@@ -117,7 +145,16 @@ class ExecutionEngine {
       await this.refreshAccountState();
     } else {
       logger.warn(
-        "No Bybit credentials configured — running on public market data only.",
+        "No Bybit credentials configured — running on public market data only" +
+          (config.tradingEnabled ? "" : " (paper mode)") +
+          ".",
+      );
+    }
+
+    if (circuitBreaker.evaluate(this.cachedAccount?.equity ?? 0)) {
+      logger.warn(
+        `Circuit breaker is tripped (${circuitBreaker.trippedReason}). ` +
+          "The engine will run but will not open new positions until it resets.",
       );
     }
 
@@ -129,6 +166,7 @@ class ExecutionEngine {
       `Engine RUNNING — strategy "${strategy.name}" (${strategy.kind}) on ` +
         `${strategy.pairs.join(", ")}${config.tradingEnabled ? "" : " [PAPER]"}`,
     );
+    audit(AuditAction.ENGINE_START, `strategy=${strategy.name} network=${config.network}`, actor);
 
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), HEARTBEAT_INTERVAL_MS);
     this.tickTimer = setInterval(() => void this.tick(), TICK_INTERVAL_MS);
@@ -137,7 +175,7 @@ class ExecutionEngine {
     void this.tick();
   }
 
-  async stop(): Promise<void> {
+  async stop(actor: string | null = null): Promise<void> {
     if (this.state === "STOPPED") return;
 
     this.setState("STOPPING");
@@ -152,6 +190,7 @@ class ExecutionEngine {
     this.startedAt = null;
     this.setState("STOPPED");
     logger.info("Engine STOPPED — open positions were left untouched");
+    audit(AuditAction.ENGINE_STOP, "engine stopped", actor);
   }
 
   /**
@@ -159,21 +198,72 @@ class ExecutionEngine {
    * Deliberately tolerant of failure — a partial close still beats none, and
    * the operator hit this button because something is already wrong.
    */
-  async emergencyStop(): Promise<{ closed: number }> {
+  async emergencyStop(actor: string | null = null): Promise<{ closed: number }> {
     logger.warn("EMERGENCY STOP triggered — closing all positions");
+    audit(AuditAction.EMERGENCY_STOP, "close all positions requested", actor);
 
     let closed = 0;
     try {
       await exchange.cancelAllOrders();
       closed = await exchange.closeAllPositions();
-      logger.warn(`Emergency stop closed ${closed} position(s)`);
     } catch (err) {
       logger.error(`Emergency stop encountered an error: ${(err as Error).message}`);
     }
 
-    await this.stop();
+    // Settle our own rows too, live or paper — otherwise the trade log keeps
+    // showing positions as Open after the book has been flattened.
+    closed += await this.settleAllOpenTrades("EMERGENCY");
+
+    logger.warn(`Emergency stop closed ${closed} position(s)`);
+    await this.stop(actor);
     await notifier.send(`🛑 EMERGENCY STOP — ${closed} position(s) closed.`);
     return { closed };
+  }
+
+  /** Closes every open trade row at the best price we can get. */
+  private async settleAllOpenTrades(reason: CloseReason): Promise<number> {
+    const marks = exchange.markPrices;
+    let settled = 0;
+
+    for (const trade of openTrades()) {
+      let exitPrice = marks.get(trade.symbol) ?? null;
+      if (exitPrice === null) {
+        exitPrice = await exchange.getLastPrice(trade.symbol).catch(() => null);
+      }
+      if (exitPrice === null) continue;
+
+      if (reconciler.settle(trade, exitPrice, reason)) {
+        this.applyPaperPnl(trade, exitPrice);
+        settled += 1;
+      }
+    }
+
+    return settled;
+  }
+
+  /** Manually closes one symbol. */
+  async closePosition(symbol: string, actor: string | null = null): Promise<boolean> {
+    const trade = openTradeForSymbol(symbol);
+    if (!trade) return false;
+
+    if (!trade.paper) {
+      await exchange.closePosition(symbol).catch((err: Error) => {
+        logger.error(`Failed to close ${symbol} on the exchange: ${err.message}`);
+      });
+    }
+
+    const price =
+      exchange.markPrices.get(symbol) ??
+      (await exchange.getLastPrice(symbol).catch(() => null));
+    if (price === null) return false;
+
+    const closed = reconciler.settle(trade, price, "MANUAL");
+    if (closed) {
+      this.applyPaperPnl(trade, price);
+      audit(AuditAction.POSITION_CLOSE, `${symbol} closed manually`, actor);
+      circuitBreaker.evaluate(this.cachedAccount?.equity ?? 0);
+    }
+    return Boolean(closed);
   }
 
   private async heartbeat(): Promise<void> {
@@ -195,7 +285,19 @@ class ExecutionEngine {
   }
 
   private async refreshAccountState(): Promise<void> {
-    if (!exchange.configured) return;
+    if (!exchange.configured) {
+      // Paper mode still needs an equity series, or the chart stays empty and
+      // the circuit breaker has no denominator for the daily loss percentage.
+      this.cachedAccount = {
+        equity: this.paperEquity,
+        availableBalance: this.paperEquity,
+        pnlPct: 0,
+        unrealisedPnl: 0,
+      };
+      bus.emitEvent({ type: "account", payload: this.cachedAccount });
+      recordEquity({ at: Date.now(), equity: this.paperEquity, pnl: 0 });
+      return;
+    }
 
     try {
       const [account, positions] = await Promise.all([
@@ -208,6 +310,7 @@ class ExecutionEngine {
 
       bus.emitEvent({ type: "account", payload: account });
       bus.emitEvent({ type: "position", payload: positions[0] ?? null });
+      bus.emitEvent({ type: "positions", payload: positions });
 
       recordEquity({
         at: Date.now(),
@@ -220,6 +323,15 @@ class ExecutionEngine {
     }
   }
 
+  /** Credits simulated P&L so the paper equity curve actually moves. */
+  private applyPaperPnl(
+    trade: { side: "LONG" | "SHORT"; size: number; entryPrice: number; paper: boolean },
+    exitPrice: number,
+  ): void {
+    if (!trade.paper) return;
+    this.paperEquity += netPnl(trade, exitPrice);
+  }
+
   /** One evaluation pass over every symbol the armed strategy watches. */
   private async tick(): Promise<void> {
     if (this.state !== "RUNNING" || this.ticking) return;
@@ -230,6 +342,16 @@ class ExecutionEngine {
 
       const strategy = this.activeStrategy;
       if (!strategy) return;
+
+      await this.reconcile(strategy);
+
+      // Re-check after reconciliation: a trade that just closed at a loss may
+      // be the one that trips the breaker.
+      const halted = circuitBreaker.evaluate(this.cachedAccount?.equity ?? 0);
+      if (halted) {
+        await this.handleTrippedBreaker();
+        return;
+      }
 
       const impl = getStrategyImpl(strategy.kind);
       const interval = String(strategy.params.interval ?? "5");
@@ -249,10 +371,19 @@ class ExecutionEngine {
             reason: decision.reason,
             confidence: decision.confidence,
             acted: false,
+            skippedReason: null,
           });
 
-          const acted = await this.actOnSignal(signal, strategy, candles.at(-1)!.close);
-          bus.emitEvent({ type: "signal", payload: { ...signal, acted } });
+          const outcome = await this.actOnSignal(
+            signal,
+            strategy,
+            candles.at(-1)!.close,
+          );
+          markSignalActed(signal.id, outcome.acted, outcome.reason);
+          bus.emitEvent({
+            type: "signal",
+            payload: { ...signal, acted: outcome.acted, skippedReason: outcome.reason },
+          });
         } catch (err) {
           logger.error(`Evaluation failed for ${symbol}: ${(err as Error).message}`);
         }
@@ -262,46 +393,89 @@ class ExecutionEngine {
     }
   }
 
+  /** Settles closed positions and ratchets trailing stops. */
+  private async reconcile(strategy: StrategyConfig): Promise<void> {
+    const marks = exchange.markPrices;
+
+    // Fall back to REST when the ticker stream has not delivered a price yet.
+    for (const symbol of strategy.pairs) {
+      if (marks.has(symbol)) continue;
+      const price = await exchange.getLastPrice(symbol).catch(() => null);
+      if (price !== null) marks.set(symbol, price);
+    }
+
+    if (config.tradingEnabled && exchange.configured) {
+      const settled = await reconciler.reconcileLive(this.cachedPositions, async (symbol) =>
+        marks.get(symbol) ?? (await exchange.getLastPrice(symbol).catch(() => null)),
+      );
+      if (settled.length > 0) await this.refreshAccountState();
+    } else {
+      const settled = await reconciler.reconcilePaper(marks);
+      for (const trade of settled) {
+        this.applyPaperPnl(trade, trade.exitPrice ?? trade.entryPrice);
+      }
+      if (settled.length > 0) await this.refreshAccountState();
+    }
+
+    const moved = reconciler.applyTrailingStops(marks, strategy.risk.trailingStopPct);
+    for (const { trade, stopLoss } of moved) {
+      if (trade.paper) continue;
+      const tick = instrumentOrFallback(trade.symbol).tickSize;
+      await exchange
+        .setStopLoss(trade.symbol, roundToTick(stopLoss, tick))
+        .catch((err: Error) =>
+          logger.warn(`Could not push trailing stop for ${trade.symbol}: ${err.message}`),
+        );
+    }
+  }
+
+  private async handleTrippedBreaker(): Promise<void> {
+    const cfg = circuitBreaker.config;
+    if (!cfg.flattenOnTrip) return;
+
+    const open = openTrades();
+    if (open.length === 0) return;
+
+    logger.warn("Circuit breaker set to flatten — closing open positions");
+    if (config.tradingEnabled) await exchange.closeAllPositions().catch(() => 0);
+    await this.settleAllOpenTrades("EMERGENCY");
+  }
+
   /** Applies risk checks and, if they pass, opens the position. */
   private async actOnSignal(
     signal: Signal,
     strategy: StrategyConfig,
     price: number,
-  ): Promise<boolean> {
+  ): Promise<{ acted: boolean; reason: string | null }> {
     const side = signal.action === "BUY" ? "LONG" : "SHORT";
     const equity = this.cachedAccount?.equity ?? 0;
+    const instrument = instrumentOrFallback(signal.symbol);
 
     const verdict = assessRisk({
       strategy,
       openPositions: this.cachedPositions,
       accountEquity: equity,
-      intendedNotional: strategy.risk.maxPositionSize,
       symbol: signal.symbol,
+      price,
+      instrument,
     });
 
     if (!verdict.allowed) {
       logger.info(`Signal ${signal.action} ${signal.symbol} not actioned: ${verdict.reason}`);
-      return false;
+      return { acted: false, reason: verdict.reason };
     }
 
-    const qty = quantityFor(verdict.notional, price);
-    if (qty <= 0) {
-      logger.warn(
-        `Computed quantity for ${signal.symbol} rounded to zero ` +
-          `(notional ${verdict.notional.toFixed(2)} @ ${price}) — skipping`,
-      );
-      return false;
-    }
-
-    const { stopLoss, takeProfit } = protectivePrices(price, side, strategy.risk);
+    const raw = protectivePrices(price, side, strategy.risk);
+    const stopLoss = roundToTick(raw.stopLoss, instrument.tickSize);
+    const takeProfit = roundToTick(raw.takeProfit, instrument.tickSize);
 
     try {
       const orderId = await exchange.placeMarketOrder({
         symbol: signal.symbol,
         side: signal.action === "BUY" ? "Buy" : "Sell",
-        qty,
-        stopLoss: Number(stopLoss.toFixed(2)),
-        takeProfit: Number(takeProfit.toFixed(2)),
+        qty: verdict.quantity,
+        stopLoss,
+        takeProfit,
       });
 
       const trade = insertTrade({
@@ -309,28 +483,32 @@ class ExecutionEngine {
         closedAt: null,
         symbol: signal.symbol,
         side,
-        size: qty,
+        size: verdict.quantity,
         entryPrice: price,
         exitPrice: null,
         pnl: 0,
+        fees: 0,
         status: "Open",
+        closeReason: null,
         strategyId: strategy.id,
         exchangeOrderId: orderId,
+        stopLoss,
+        takeProfit,
+        paper: orderId === null,
       });
 
       bus.emitEvent({ type: "trade", payload: trade });
       logger.trade(
-        `Position opened ${signal.symbol} ${side} @ ${price} (size ${qty})` +
+        `Position opened ${signal.symbol} ${side} @ ${price} (size ${verdict.quantity})` +
           `${orderId ? "" : " [PAPER]"}`,
       );
       await notifier.tradeOpened(trade);
 
-      return true;
+      return { acted: true, reason: null };
     } catch (err) {
-      logger.error(
-        `Order placement failed for ${signal.symbol}: ${(err as Error).message}`,
-      );
-      return false;
+      const message = (err as Error).message;
+      logger.error(`Order placement failed for ${signal.symbol}: ${message}`);
+      return { acted: false, reason: `Order failed: ${message}` };
     }
   }
 
@@ -341,6 +519,7 @@ class ExecutionEngine {
 
     if (this.state === "RUNNING" && strategy) {
       exchange.connectWebsocket(strategy.pairs);
+      void loadInstruments(() => exchange.getInstruments(), strategy.pairs);
       logger.info(`Reloaded strategy "${strategy.name}"`);
     }
     bus.emitEvent({ type: "status", payload: this.getStatus() });
