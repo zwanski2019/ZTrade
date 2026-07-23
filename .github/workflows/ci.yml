@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
       - uses: pnpm/action-setup@v4
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No `version:` — it is read from package.json `packageManager`.
       # Specifying both makes the action fail with "Multiple versions of pnpm".
       - uses: pnpm/action-setup@v4
