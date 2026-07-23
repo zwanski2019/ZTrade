@@ -22,9 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No `version:` — it is read from package.json `packageManager`.
+      # Specifying both makes the action fail with "Multiple versions of pnpm".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -50,9 +50,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # No `version:` — it is read from package.json `packageManager`.
+      # Specifying both makes the action fail with "Multiple versions of pnpm".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -74,9 +74,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # No `version:` — it is read from package.json `packageManager`.
+      # Specifying both makes the action fail with "Multiple versions of pnpm".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22

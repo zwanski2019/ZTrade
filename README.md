@@ -34,7 +34,7 @@ A fresh checkout runs on testnet, in paper mode, and refuses to touch real funds
 
 **None of this makes the bundled strategies profitable.** They are ordinary textbook indicators — MACD, RSI, Bollinger. Backtest results are optimistic by construction. Treat this repository as *infrastructure*, not as financial advice.
 
-> **Not investment advice.** No warranty. You are solely responsible for every order this software places. See [DISCLAIMER](#disclaimer).
+> **Not investment advice.** No warranty. You are solely responsible for every order this software places. See [DISCLAIMER.md](DISCLAIMER.md).
 
 ---
 
@@ -233,6 +233,8 @@ ZTrade is provided **as is**, without warranty of any kind. It is a piece of eng
 Cryptocurrency derivatives trading carries a **high risk of loss**, including loss exceeding your deposit. Automated systems can fail in ways manual trading does not: a bug, a stale feed, or an exchange outage can produce losses faster than you can react.
 
 Do not run this with money you cannot afford to lose. Do not run it on mainnet until you have run it on testnet for an extended period and understand every line it executes on your behalf. The authors accept no liability for any loss.
+
+Full terms: **[DISCLAIMER.md](DISCLAIMER.md)**
 
 ---
 
