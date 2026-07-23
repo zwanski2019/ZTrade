@@ -58,7 +58,7 @@ Then: **Strategies → arm one → Dashboard → Start Bot.**
 
 ```bash
 pnpm dev:server / pnpm dev:web
-pnpm test        # 82 unit + integration tests
+pnpm test        # 119 unit + integration tests
 pnpm typecheck
 pnpm build
 ```
@@ -150,6 +150,58 @@ equity curve is chronologically correct.
 
 ---
 
+## Market intelligence
+
+A layer of context built entirely on **free, key-free public APIs**. Every
+provider is optional: if one is unreachable the corresponding intelligence is
+simply absent and the engine keeps trading on price alone. Failures never throw,
+results are cached, and stale data is served in preference to nothing.
+
+| Source | Provides | Cost |
+| --- | --- | --- |
+| alternative.me | Crypto Fear & Greed index | free, no key |
+| Binance futures (public) | Funding rate, open interest + history, long/short ratio | free, no key |
+| CoinGecko (public) | BTC dominance, total market cap, 24h change | free, no key |
+| Coinbase + Kraken (public) | Independent spot prices for cross-venue consensus | free, no key |
+| Bybit klines | Regime, volatility and correlation, from the prices we actually trade | free |
+
+What it does with them:
+
+**Regime classification** (ADX + ATR) labels the market TRENDING / RANGING /
+VOLATILE / TRANSITIONAL, and blocks strategies that do not suit it. Mean
+reversion into a strong trend and momentum in a chop are the two classic ways a
+sound strategy bleeds money, and neither failure is visible to the strategy
+itself — it only sees its own indicator firing correctly. An uncertain
+classification blocks nothing.
+
+**Correlation guard.** Three positions in BTC, ETH and SOL is not three
+positions. On real mainnet 5m data those pairs correlate at **0.81–0.89**, so
+without this check the "max open positions" limit silently permits exactly the
+concentration it was meant to prevent. Correlation is computed on returns, not
+prices — two assets that both drift up have a high price correlation almost by
+construction.
+
+**Cross-venue consensus guard.** Our price is compared against the median of
+independent venues. A large deviation means the feed is stale or the book is
+broken — precisely when a bot should stop rather than act.
+
+**Conviction scoring** folds the strategy's own confidence together with regime
+agreement, funding (crowd positioning), sentiment and open-interest trend into
+one 0–1 score that gates the entry and scales the size. Size scaling is bounded
+to 0.5×–1.0×: conviction may shrink a position but **never** grow it beyond what
+the risk limits approved.
+
+**Volatility stops** derive the stop distance from ATR instead of a fixed
+percentage, so "the move went genuinely against me" means the same thing in a
+calm market and a wild one. Optional, off by default.
+
+Honest limits: the scoring weights are reasoned defaults, not fitted parameters.
+Sentiment and funding are slow, noisy inputs that matter mainly at extremes.
+Correlation is backward-looking. Treat the score as a filter against obviously
+bad entries, not as alpha.
+
+---
+
 ## API
 
 | Method | Path | Notes |
@@ -162,6 +214,8 @@ equity curve is chronologically correct.
 | `GET` | `/api/positions` | Exchange positions + open trade rows |
 | `POST` | `/api/positions/:symbol/close` | Close one symbol |
 | `GET`/`PUT` | `/api/circuit-breaker` | Config + live state |
+| `GET` | `/api/intel` | Regime, sentiment, funding, correlation snapshot |
+| `PUT` | `/api/intel/settings` | Toggle regime/conviction/correlation filters |
 | `POST` | `/api/circuit-breaker/reset` | Clear a trip |
 | `GET`/`POST` | `/api/strategies` | |
 | `POST` | `/api/strategies/:id/activate` \| `/backtest` | |
@@ -178,7 +232,8 @@ misrouted fetch during development — cannot flatten a live book.
 
 ## Status
 
-Working: engine lifecycle, all three strategies, the full trade lifecycle
+Working: market intelligence from five free public sources, regime gating,
+correlation and consensus guards, conviction scoring, engine lifecycle, all three strategies, the full trade lifecycle
 (open → settle → net P&L → analytics), risk gate with instrument-aware sizing,
 circuit breaker, trailing stops, backtests against real Bybit candles, SQLite
 persistence with additive migrations, trade history with CSV export, live
@@ -195,3 +250,7 @@ Not done yet:
 - **Backtest sizing does not compound** across symbols within a run.
 - The reconciler infers a live close reason from where price landed; it does not
   query which order actually filled.
+- **Intelligence weights are unfitted.** No walk-forward validation has been done
+  on the conviction model; it is a sanity filter, not a proven edge.
+- Free providers are courtesy-rate-limited. Heavy multi-pair use may need caching
+  windows widened or a paid feed.

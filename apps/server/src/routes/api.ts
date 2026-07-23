@@ -6,6 +6,7 @@ import {
   maskSecret,
   type CircuitBreakerConfig,
   type DashboardSnapshot,
+  type IntelSettings,
   type Settings,
   type StrategyConfig,
   type TradeStatus,
@@ -16,6 +17,7 @@ import { logger, recentLogs } from "../bus.js";
 import { engine } from "../engine/engine.js";
 import { runBacktest } from "../engine/backtest.js";
 import { circuitBreaker } from "../engine/circuitBreaker.js";
+import { intel } from "../intel/index.js";
 import { exchange } from "../exchange/bybit.js";
 import { cachedInstrument } from "../exchange/instruments.js";
 import { buildSummary } from "../notify/scheduler.js";
@@ -69,6 +71,17 @@ const circuitBreakerSchema = z.object({
   maxConsecutiveLosses: z.number().int().nonnegative().max(100),
   cooldownMinutes: z.number().int().nonnegative().max(10_080),
   flattenOnTrip: z.boolean(),
+});
+
+const intelSettingsSchema = z.object({
+  enabled: z.boolean(),
+  regimeFilter: z.boolean(),
+  convictionFilter: z.boolean(),
+  convictionSizing: z.boolean(),
+  volatilityStops: z.boolean(),
+  atrStopMultiplier: z.number().positive().max(10),
+  maxCorrelation: z.number().min(0).max(1),
+  maxConsensusDeviationBps: z.number().nonnegative().max(10_000),
 });
 
 const UI_SETTINGS_KEY = "ui";
@@ -177,6 +190,28 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/circuit-breaker/reset", async (req) => {
     circuitBreaker.reset(`manual reset by ${actorOf(req)}`);
     return { ok: true, state: circuitBreaker.getState(engine.getAccount()?.equity ?? 0) };
+  });
+
+  // -------------------------------------------------------------------------
+  // Market intelligence
+  // -------------------------------------------------------------------------
+
+  app.get("/api/intel", async () => ({
+    intel: intel.current,
+    settings: intel.settings,
+  }));
+
+  app.put("/api/intel/settings", async (req, reply) => {
+    const parsed = intelSettingsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: "Invalid intel settings", issues: parsed.error.issues });
+    }
+
+    intel.setSettings(parsed.data as IntelSettings);
+    auditFromRequest(req, AuditAction.SETTINGS_UPDATE, "market intelligence settings updated");
+    return { ok: true, settings: intel.settings };
   });
 
   // -------------------------------------------------------------------------

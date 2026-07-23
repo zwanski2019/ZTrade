@@ -10,6 +10,10 @@ import type {
 import { config } from "../config.js";
 import { bus, logger } from "../bus.js";
 import { exchange, NotConfiguredError } from "../exchange/bybit.js";
+import type { Candle } from "../exchange/bybit.js";
+import { intel } from "../intel/index.js";
+import { regimeAllows, regimeExplanation } from "../intel/regime.js";
+import { scoreConviction, sizeMultiplier, volatilityStopPct } from "../intel/scoring.js";
 import {
   instrumentOrFallback,
   isStale,
@@ -25,7 +29,7 @@ import {
   recordEquity,
 } from "../db.js";
 import { getStrategyImpl } from "../strategies/index.js";
-import { assessRisk, protectivePrices, roundToTick } from "./risk.js";
+import { assessRisk, protectivePrices, quantityFor, roundToTick } from "./risk.js";
 import { circuitBreaker } from "./circuitBreaker.js";
 import { netPnl, reconciler } from "./reconciler.js";
 import { notifier } from "../notify/telegram.js";
@@ -356,9 +360,32 @@ class ExecutionEngine {
       const impl = getStrategyImpl(strategy.kind);
       const interval = String(strategy.params.interval ?? "5");
 
+      // Fetch every symbol's candles up front: the intelligence layer needs the
+      // whole set at once to compute cross-symbol correlation.
+      const candlesBySymbol = new Map<string, Candle[]>();
       for (const symbol of strategy.pairs) {
         try {
-          const candles = await exchange.getCandles(symbol, interval, CANDLE_LOOKBACK);
+          candlesBySymbol.set(
+            symbol,
+            await exchange.getCandles(symbol, interval, CANDLE_LOOKBACK),
+          );
+        } catch (err) {
+          logger.error(`Could not fetch candles for ${symbol}: ${(err as Error).message}`);
+        }
+      }
+
+      const intelSettings = intel.settings;
+      if (intelSettings.enabled) {
+        // Never let a third-party outage stall the trading loop.
+        await intel
+          .refresh(candlesBySymbol, exchange.markPrices)
+          .catch((err: Error) => logger.warn(`Intel refresh failed: ${err.message}`));
+        intel.logDegradation();
+      }
+
+      for (const symbol of strategy.pairs) {
+        try {
+          const candles = candlesBySymbol.get(symbol) ?? [];
           if (candles.length < impl.warmup) continue;
 
           const decision = impl.evaluate(candles, strategy);
@@ -451,6 +478,67 @@ class ExecutionEngine {
     const equity = this.cachedAccount?.equity ?? 0;
     const instrument = instrumentOrFallback(signal.symbol);
 
+    // --- Market intelligence gates ----------------------------------------
+    // These run BEFORE the risk gate because they are cheaper and because a
+    // regime mismatch is a reason not to consider the trade at all.
+    const settings = intel.settings;
+    const symbolIntel = settings.enabled ? intel.intelFor(signal.symbol) : null;
+    let convictionScore: number | null = null;
+
+    if (symbolIntel) {
+      if (settings.regimeFilter && !regimeAllows(strategy.kind, symbolIntel.regime)) {
+        const why = regimeExplanation(strategy.kind, symbolIntel.regime);
+        logger.info(`Signal ${signal.action} ${signal.symbol} not actioned: ${why}`);
+        return { acted: false, reason: why };
+      }
+
+      // A price that disagrees with every other venue means our feed is stale
+      // or the book is broken — precisely when NOT to act on it.
+      const deviation = symbolIntel.consensusDeviationBps;
+      if (
+        deviation !== null &&
+        Math.abs(deviation) > settings.maxConsensusDeviationBps
+      ) {
+        const why =
+          `Price is ${deviation.toFixed(0)}bps from cross-venue consensus ` +
+          `(limit ${settings.maxConsensusDeviationBps}bps)`;
+        logger.warn(`Signal ${signal.action} ${signal.symbol} not actioned: ${why}`);
+        return { acted: false, reason: why };
+      }
+
+      const conviction = scoreConviction({
+        action: signal.action,
+        signalConfidence: signal.confidence,
+        regime: symbolIntel.regime,
+        regimeDirection: symbolIntel.direction,
+        fundingRate: symbolIntel.fundingRate,
+        fearGreed: intel.current.fearGreed?.value ?? null,
+        openInterestChangePct: symbolIntel.openInterestChangePct,
+      });
+      convictionScore = conviction.score;
+
+      if (settings.convictionFilter && !conviction.passed) {
+        const why =
+          `Conviction ${(conviction.score * 100).toFixed(0)}% below threshold` +
+          (conviction.reasons.length ? ` (${conviction.reasons.join(", ")})` : "");
+        logger.info(`Signal ${signal.action} ${signal.symbol} not actioned: ${why}`);
+        return { acted: false, reason: why };
+      }
+    }
+
+    // Concentration guard: correlated positions are one position at N× size.
+    if (settings.enabled && settings.maxCorrelation < 1) {
+      const held = openTrades().map((t) => t.symbol);
+      const worst = intel.worstCorrelation(signal.symbol, held);
+      if (worst && Math.abs(worst.value) >= settings.maxCorrelation) {
+        const why =
+          `Correlation ${worst.value.toFixed(2)} with open ${worst.symbol} ` +
+          `exceeds limit ${settings.maxCorrelation}`;
+        logger.info(`Signal ${signal.action} ${signal.symbol} not actioned: ${why}`);
+        return { acted: false, reason: why };
+      }
+    }
+
     const verdict = assessRisk({
       strategy,
       openPositions: this.cachedPositions,
@@ -465,7 +553,38 @@ class ExecutionEngine {
       return { acted: false, reason: verdict.reason };
     }
 
-    const raw = protectivePrices(price, side, strategy.risk);
+    // Conviction may SHRINK the approved size but never grow it — otherwise a
+    // confident-looking score could quietly breach the operator's ceiling.
+    let quantity = verdict.quantity;
+    if (settings.convictionSizing && convictionScore !== null) {
+      const scaled = quantityFor(
+        verdict.notional * sizeMultiplier(convictionScore),
+        price,
+        instrument.qtyStep,
+      );
+      if (scaled >= instrument.minOrderQty && scaled * price >= instrument.minNotional) {
+        quantity = scaled;
+      }
+      // If scaling down would breach an exchange minimum, keep the full size
+      // rather than sending an order that gets rejected.
+    }
+
+    // Volatility-adjusted stops: a fixed 2% is noise in a wild market and
+    // needlessly wide in a calm one. ATR makes the stop mean the same thing.
+    const effectiveRisk = { ...strategy.risk };
+    if (settings.volatilityStops && symbolIntel && symbolIntel.volatility > 0) {
+      const atrStop = volatilityStopPct(
+        symbolIntel.volatility,
+        settings.atrStopMultiplier,
+        strategy.risk.stopLossPct,
+      );
+      // Keep the operator's reward:risk ratio intact when widening the stop.
+      const ratio = strategy.risk.takeProfitPct / Math.max(strategy.risk.stopLossPct, 0.01);
+      effectiveRisk.stopLossPct = atrStop;
+      effectiveRisk.takeProfitPct = atrStop * ratio;
+    }
+
+    const raw = protectivePrices(price, side, effectiveRisk);
     const stopLoss = roundToTick(raw.stopLoss, instrument.tickSize);
     const takeProfit = roundToTick(raw.takeProfit, instrument.tickSize);
 
@@ -473,7 +592,7 @@ class ExecutionEngine {
       const orderId = await exchange.placeMarketOrder({
         symbol: signal.symbol,
         side: signal.action === "BUY" ? "Buy" : "Sell",
-        qty: verdict.quantity,
+        qty: quantity,
         stopLoss,
         takeProfit,
       });
@@ -483,7 +602,7 @@ class ExecutionEngine {
         closedAt: null,
         symbol: signal.symbol,
         side,
-        size: verdict.quantity,
+        size: quantity,
         entryPrice: price,
         exitPrice: null,
         pnl: 0,
@@ -499,7 +618,7 @@ class ExecutionEngine {
 
       bus.emitEvent({ type: "trade", payload: trade });
       logger.trade(
-        `Position opened ${signal.symbol} ${side} @ ${price} (size ${verdict.quantity})` +
+        `Position opened ${signal.symbol} ${side} @ ${price} (size ${quantity})` +
           `${orderId ? "" : " [PAPER]"}`,
       );
       await notifier.tradeOpened(trade);

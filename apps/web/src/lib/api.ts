@@ -4,6 +4,8 @@ import type {
   CircuitBreakerConfig,
   CircuitBreakerState,
   DashboardSnapshot,
+  IntelSettings,
+  MarketIntel,
   EngineStatus,
   EquityPoint,
   LogEntry,
@@ -116,6 +118,13 @@ export const api = {
   resetCircuitBreaker: () =>
     request<{ ok: boolean; state: CircuitBreakerState }>("/api/circuit-breaker/reset", {
       method: "POST",
+    }),
+
+  intel: () => request<{ intel: MarketIntel; settings: IntelSettings }>("/api/intel"),
+  saveIntelSettings: (body: IntelSettings) =>
+    request<{ ok: boolean }>("/api/intel/settings", {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
 
   strategies: () => request<StrategyConfig[]>("/api/strategies"),

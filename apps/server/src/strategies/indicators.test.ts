@@ -73,3 +73,91 @@ test("bollinger bands bracket the middle band", () => {
   assert.ok(upper.at(-1)! > middle.at(-1)!);
   assert.ok(lower.at(-1)! < middle.at(-1)!);
 });
+
+// ---------------------------------------------------------------------------
+// Volatility, trend strength and correlation
+// ---------------------------------------------------------------------------
+
+import { adx, atr, atrPercent, correlation, returns, trueRange } from "./indicators.ts";
+import type { Bar } from "./indicators.ts";
+
+const flat: Bar[] = Array.from({ length: 40 }, () => ({ high: 101, low: 99, close: 100 }));
+
+test("true range accounts for gaps, not just the bar's own span", () => {
+  const bars: Bar[] = [
+    { high: 100, low: 98, close: 99 },
+    // Gaps up: the bar spans 2 but the move from the prior close is 6.
+    { high: 105, low: 103, close: 104 },
+  ];
+  assert.deepEqual(trueRange(bars), [6]);
+});
+
+test("ATR is positive and stable on constant-range bars", () => {
+  const series = atr(flat, 14);
+  assert.ok(series.length > 0);
+  assert.equal(series.at(-1), 2);
+});
+
+test("atrPercent expresses ATR relative to price", () => {
+  const series = atrPercent(flat, 14);
+  // Range of 2 on a price of 100 is 2%.
+  assert.ok(Math.abs(series.at(-1)! - 0.02) < 1e-9);
+});
+
+test("ATR returns empty rather than throwing on short input", () => {
+  assert.deepEqual(atr([{ high: 1, low: 0, close: 0.5 }], 14), []);
+  assert.deepEqual(trueRange([]), []);
+});
+
+test("ADX is high in a trend and low in a chop", () => {
+  const trend: Bar[] = Array.from({ length: 120 }, (_, i) => ({
+    high: 100 + i + 0.3,
+    low: 100 + i - 0.3,
+    close: 100 + i,
+  }));
+  const chop: Bar[] = Array.from({ length: 120 }, (_, i) => {
+    const c = 100 + Math.sin(i / 2) * 0.5;
+    return { high: c + 0.2, low: c - 0.2, close: c };
+  });
+
+  assert.ok(adx(trend).at(-1)! > 25, "trend should read as strong");
+  assert.ok(adx(chop).at(-1)! < 20, "chop should read as weak");
+});
+
+test("ADX stays within 0..100", () => {
+  for (const value of adx(flat.concat(flat))) {
+    assert.ok(value >= 0 && value <= 100, `ADX out of range: ${value}`);
+  }
+});
+
+test("returns converts prices to fractional changes", () => {
+  assert.deepEqual(returns([100, 110, 99]), [0.1, -0.1]);
+});
+
+test("identical series correlate at +1 and inverted at -1", () => {
+  const a = returns([100, 101, 103, 102, 105, 104]);
+  const inverted = a.map((v) => -v);
+
+  assert.ok(Math.abs(correlation(a, a) - 1) < 1e-9);
+  assert.ok(Math.abs(correlation(a, inverted) + 1) < 1e-9);
+});
+
+test("correlation is bounded and symmetric", () => {
+  const a = returns([100, 102, 101, 104, 103, 106]);
+  const b = returns([50, 51, 50.4, 52, 51.6, 53]);
+
+  const ab = correlation(a, b);
+  assert.ok(ab >= -1 && ab <= 1);
+  assert.ok(Math.abs(ab - correlation(b, a)) < 1e-12);
+});
+
+test("a flat series correlates with nothing rather than dividing by zero", () => {
+  const moving = returns([100, 101, 102, 103]);
+  const constant = returns([100, 100, 100, 100]);
+  assert.equal(correlation(moving, constant), 0);
+});
+
+test("correlation needs at least two points", () => {
+  assert.equal(correlation([0.1], [0.2]), 0);
+  assert.equal(correlation([], []), 0);
+});

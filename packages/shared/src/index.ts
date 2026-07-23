@@ -371,3 +371,105 @@ export const defaultCircuitBreaker: CircuitBreakerConfig = {
   cooldownMinutes: 60,
   flattenOnTrip: false,
 };
+
+// ---------------------------------------------------------------------------
+// Market intelligence
+// ---------------------------------------------------------------------------
+
+/** How the market is behaving right now, independent of direction. */
+export type MarketRegime =
+  | "TRENDING"
+  | "RANGING"
+  | "VOLATILE"
+  | "TRANSITIONAL"
+  | "UNKNOWN";
+
+/** Inputs to the composite conviction score. Nulls mean "data unavailable". */
+export interface ConvictionInput {
+  action: "BUY" | "SELL";
+  /** The strategy's own confidence, 0..1. */
+  signalConfidence: number;
+  regime: MarketRegime;
+  /** +1 uptrend, -1 downtrend, 0 sideways. */
+  regimeDirection: number;
+  /** Perpetual funding rate as a fraction; positive means longs pay shorts. */
+  fundingRate: number | null;
+  /** Fear & Greed index, 0..100. */
+  fearGreed: number | null;
+  /** Percentage change in open interest over the recent window. */
+  openInterestChangePct: number | null;
+}
+
+export interface ConvictionScore {
+  /** 0..1 composite. */
+  score: number;
+  passed: boolean;
+  reasons: string[];
+  components: {
+    signal: number;
+    regime: number;
+    funding: number;
+    sentiment: number;
+    openInterest: number;
+  };
+}
+
+/** Per-symbol intelligence gathered from free public sources. */
+export interface SymbolIntel {
+  symbol: string;
+  regime: MarketRegime;
+  adx: number;
+  /** ATR as a fraction of price. */
+  volatility: number;
+  direction: number;
+  fundingRate: number | null;
+  openInterest: number | null;
+  openInterestChangePct: number | null;
+  longShortRatio: number | null;
+  /** Median price across independent venues, when available. */
+  consensusPrice: number | null;
+  /** Our venue's deviation from consensus, in basis points. */
+  consensusDeviationBps: number | null;
+}
+
+export interface MarketIntel {
+  at: number;
+  fearGreed: { value: number; classification: string } | null;
+  btcDominance: number | null;
+  totalMarketCapUsd: number | null;
+  marketCapChangePct24h: number | null;
+  symbols: SymbolIntel[];
+  /** Rolling return correlation between traded pairs, keyed "A|B". */
+  correlations: Record<string, number>;
+  /** Providers that failed on the last refresh. */
+  degraded: string[];
+}
+
+export interface IntelSettings {
+  enabled: boolean;
+  /** Block strategies whose kind does not suit the current regime. */
+  regimeFilter: boolean;
+  /** Require the composite conviction score to clear its threshold. */
+  convictionFilter: boolean;
+  /** Scale position size by conviction (never above the risk-approved size). */
+  convictionSizing: boolean;
+  /** Derive stop distance from ATR instead of the fixed percentage. */
+  volatilityStops: boolean;
+  /** ATR multiple used for volatility stops. */
+  atrStopMultiplier: number;
+  /** Block a new position correlated above this with an existing one. */
+  maxCorrelation: number;
+  /** Refuse to trade when our price deviates from consensus by more than this. */
+  maxConsensusDeviationBps: number;
+}
+
+export const defaultIntelSettings: IntelSettings = {
+  enabled: true,
+  regimeFilter: true,
+  convictionFilter: true,
+  convictionSizing: true,
+  volatilityStops: false,
+  atrStopMultiplier: 2,
+  maxCorrelation: 0.85,
+  maxConsensusDeviationBps: 100,
+};
