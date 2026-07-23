@@ -2,7 +2,7 @@
   "name": "ztrade",
   "version": "0.1.0",
   "private": true,
-  "description": "ZTrade — Bybit automated trading terminal",
+  "description": "ZTrade \u2014 Bybit automated trading terminal",
   "type": "module",
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
@@ -10,7 +10,10 @@
     "dev:web": "pnpm --filter @ztrade/web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "test:gates": "pnpm --filter @ztrade/execution test && pnpm --filter @ztrade/security test && node scripts/log-scan.mjs",
+    "gate:parity": "pnpm --filter @ztrade/execution exec node --import tsx --test src/parity.test.ts",
+    "gate:secrets": "node scripts/log-scan.mjs"
   },
   "engines": {
     "node": ">=20"
