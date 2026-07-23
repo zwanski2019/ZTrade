@@ -4,6 +4,11 @@ import type {
   RiskLimits,
   StrategyConfig,
 } from "@ztrade/shared";
+import {
+  quantityForNotional,
+  roundToTick as roundToTickExact,
+  protectivePrices as protectivePricesExact,
+} from "@ztrade/core";
 import { openTrades, tradesOpenedToday } from "../db.js";
 
 export interface RiskContext {
@@ -163,36 +168,16 @@ export function quantityFor(notional: number, price: number, stepSize = 0.001): 
   if (price <= 0 || stepSize <= 0 || !Number.isFinite(notional) || notional <= 0) {
     return 0;
   }
-
-  const raw = notional / price;
-
-  // Nudge before flooring: an exact multiple can land just under itself in
-  // binary float (0.3 / 0.1 === 2.9999999999999996), which would silently drop
-  // a whole step. The epsilon is relative so it stays negligible at any scale,
-  // and far too small to push a genuine remainder up to the next step.
-  const ratio = raw / stepSize;
-  const steps = Math.floor(ratio + Math.max(1, ratio) * Number.EPSILON * 4);
-  const qty = steps * stepSize;
-
-  // Guard against binary-float dust, e.g. 0.30000000000000004.
-  const decimals = decimalsFor(stepSize);
-  return Number(qty.toFixed(decimals));
+  // Exact decimal arithmetic — no epsilon nudge. The float version needed one
+  // because `0.3 / 0.1` floored to 2, dropping a whole step; integer-unit
+  // arithmetic in Decimal cannot produce that. See @ztrade/core money helpers.
+  return quantityForNotional(notional, price, stepSize).toNumber();
 }
 
 /** Rounds a price to the instrument's tick size — Bybit rejects finer prices. */
 export function roundToTick(price: number, tickSize: number): number {
   if (tickSize <= 0 || !Number.isFinite(price)) return price;
-  const ticks = Math.round(price / tickSize);
-  return Number((ticks * tickSize).toFixed(decimalsFor(tickSize)));
-}
-
-function decimalsFor(step: number): number {
-  if (step >= 1) return 0;
-  // Derive from the string form rather than log10: 0.1 -> 1, 0.001 -> 3, and
-  // it stays exact for the awkward values (log10(0.001) is -2.9999999999999996).
-  const text = step.toExponential();
-  const exponent = Number(text.slice(text.indexOf("e") + 1));
-  return Math.max(0, -exponent);
+  return roundToTickExact(price, tickSize, "HALF_UP").toNumber();
 }
 
 /** Stop-loss / take-profit prices derived from the strategy's percentages. */
@@ -201,18 +186,14 @@ export function protectivePrices(
   side: "LONG" | "SHORT",
   limits: RiskLimits,
 ): { stopLoss: number; takeProfit: number } {
-  const slFraction = limits.stopLossPct / 100;
-  const tpFraction = limits.takeProfitPct / 100;
-
-  return side === "LONG"
-    ? {
-        stopLoss: entryPrice * (1 - slFraction),
-        takeProfit: entryPrice * (1 + tpFraction),
-      }
-    : {
-        stopLoss: entryPrice * (1 + slFraction),
-        takeProfit: entryPrice * (1 - tpFraction),
-      };
+  // Exact percentage arithmetic in Decimal, then back to number at the boundary.
+  const { stopLoss, takeProfit } = protectivePricesExact(
+    entryPrice,
+    side,
+    limits.stopLossPct,
+    limits.takeProfitPct,
+  );
+  return { stopLoss: stopLoss.toNumber(), takeProfit: takeProfit.toNumber() };
 }
 
 /**

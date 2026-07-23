@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-00FF41.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-informational)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-399%20passing-00FF41)](#testing)
+[![Tests](https://img.shields.io/badge/tests-421%20passing-00FF41)](#testing)
 
 One execution engine. Backtest, paper and live drive the **same code path**.
 

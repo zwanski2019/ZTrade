@@ -1,5 +1,5 @@
 import type { OrderBookSnapshot, OrderIntent } from "@ztrade/core";
-import { slippageBps, topOfBook } from "@ztrade/core";
+import { dec, slippageBps, topOfBook } from "@ztrade/core";
 
 /**
  * Smart execution primitives (§4.5).
@@ -173,23 +173,15 @@ export function checkSlippage(
   return { proceed: true, projectedBps: projected };
 }
 
+// Exact step rounding via Decimal — no epsilon nudge. The float version needed
+// one because an exact multiple could land at 2.9999… and floor away a whole
+// slice; integer-unit arithmetic in Decimal cannot.
 function round(value: number, step: number): number {
   if (step <= 0) return value;
-  const decimals = decimalsFor(step);
-  return Number((Math.round(value / step) * step).toFixed(decimals));
+  return dec(value).roundToStep(dec(step), "HALF_UP").toNumber();
 }
 
 function roundDown(value: number, step: number): number {
   if (step <= 0) return value;
-  const decimals = decimalsFor(step);
-  // Nudge before flooring so an exact multiple is not dropped by float dust.
-  const ratio = value / step;
-  const steps = Math.floor(ratio + Math.max(1, ratio) * Number.EPSILON * 4);
-  return Number((steps * step).toFixed(decimals));
-}
-
-function decimalsFor(step: number): number {
-  if (step >= 1) return 0;
-  const text = step.toExponential();
-  return Math.max(0, -Number(text.slice(text.indexOf("e") + 1)));
+  return dec(value).roundToStep(dec(step), "DOWN").toNumber();
 }

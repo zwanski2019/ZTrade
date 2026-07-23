@@ -5,6 +5,49 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-07-23
+
+Money is never a float. Exact decimal arithmetic on the order-critical and
+money-accumulation paths.
+
+### Added
+
+- **`@ztrade/core` Decimal** — an exact, dependency-free fixed-point decimal
+  type (bigint coefficient + scale). Exact add/sub/mul and, critically, exact
+  round-to-step — the operation that decides order sizes. Division takes an
+  explicit scale and rounding mode. Six rounding modes including banker's.
+- **Exact money helpers** — `quantityForNotional`, `roundQtyDown`,
+  `roundToTick`, `grossPnl`, `roundTripFees`, `netPnl`, `protectivePrices` —
+  all exact.
+
+### Changed
+
+- Order sizing (`quantityFor`), tick rounding, and protective-price math in the
+  engine now compute in Decimal. The epsilon-nudge hack — added because
+  `Math.floor(0.3 / 0.1)` floored to 2 and dropped a whole step of order size —
+  is GONE, replaced by integer-unit arithmetic that cannot produce the error.
+- P&L and fee accumulation (`grossPnl`/`roundTripFees`/`netPnl`) compute in
+  Decimal, so fees no longer drift a fraction of a cent per trade.
+- TWAP/iceberg slice rounding in the execution planner is now exact.
+
+### Proof
+
+The naive float path sizes `90 notional / 300 price` at step `0.1` as **0.2** —
+a 33% undersized order. ZTrade's exact path returns **0.3**.
+
+### Scope (honest)
+
+This migrates the arithmetic where floats produce wrong orders and wrong P&L.
+A full type-level migration — every `number` across event types, the database
+schema, and the UI replaced by Decimal — is incremental and tracked as future
+work. Prices/sizes still cross the wire as strings (exact) and are only
+converted to `number` for display.
+
+### Verified
+
+- 421 tests across 12 packages (core 40, +22 decimal); parity, secret and
+  red-team gates green; typecheck clean; web builds.
+
 ## [0.7.0] — 2026-07-23
 
 The Security Plane — ZTrade's wedge. A security-first algorithmic trading
@@ -183,6 +226,7 @@ gates. Additive — the existing engine is untouched and still runs.
 - Three-switch safety posture: testnet default, mainnet double opt-in, separate
   live-order gate.
 
+[0.8.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.8.0
 [0.7.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.7.0
 [0.6.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.6.0
 [0.5.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.5.0

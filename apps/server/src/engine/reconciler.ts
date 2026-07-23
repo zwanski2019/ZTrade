@@ -1,4 +1,9 @@
 import type { CloseReason, Position, Trade } from "@ztrade/shared";
+import {
+  grossPnl as grossPnlExact,
+  netPnl as netPnlExact,
+  roundTripFees as roundTripFeesExact,
+} from "@ztrade/core";
 import { closeTrade, openTrades, updateTradeProtection } from "../db.js";
 import { bus, logger } from "../bus.js";
 import { notifier } from "../notify/telegram.js";
@@ -7,9 +12,12 @@ import { trailingStopFor } from "./risk.js";
 /** Bybit taker fee, charged on entry and again on exit. */
 export const TAKER_FEE_RATE = 0.00055;
 
+// P&L is computed in exact decimal arithmetic (see @ztrade/core money helpers)
+// and converted to number only at the boundary. Fee accumulation across many
+// trades no longer drifts a fraction of a cent per trade.
+
 export function grossPnl(trade: Pick<Trade, "side" | "size" | "entryPrice">, exitPrice: number): number {
-  const delta = exitPrice - trade.entryPrice;
-  return trade.side === "LONG" ? delta * trade.size : -delta * trade.size;
+  return grossPnlExact(trade.side, trade.size, trade.entryPrice, exitPrice).toNumber();
 }
 
 export function roundTripFees(
@@ -17,7 +25,7 @@ export function roundTripFees(
   exitPrice: number,
   feeRate = TAKER_FEE_RATE,
 ): number {
-  return (trade.entryPrice * trade.size + exitPrice * trade.size) * feeRate;
+  return roundTripFeesExact(trade.size, trade.entryPrice, exitPrice, feeRate).toNumber();
 }
 
 /** Realised P&L net of both fees — what actually lands in the account. */
@@ -26,7 +34,7 @@ export function netPnl(
   exitPrice: number,
   feeRate = TAKER_FEE_RATE,
 ): number {
-  return grossPnl(trade, exitPrice) - roundTripFees(trade, exitPrice, feeRate);
+  return netPnlExact(trade.side, trade.size, trade.entryPrice, exitPrice, feeRate).toNumber();
 }
 
 /**
