@@ -13,7 +13,8 @@
     "test": "pnpm -r test",
     "test:gates": "pnpm --filter @ztrade/execution test && pnpm --filter @ztrade/security test && node scripts/log-scan.mjs",
     "gate:parity": "pnpm --filter @ztrade/execution exec node --import tsx --test src/parity.test.ts",
-    "gate:secrets": "node scripts/log-scan.mjs"
+    "gate:secrets": "node scripts/log-scan.mjs",
+    "wiki:publish": "bash scripts/publish-wiki.sh"
   },
   "engines": {
     "node": ">=20"
