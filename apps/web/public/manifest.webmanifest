@@ -1,0 +1,15 @@
+{
+  "name": "ZTrade Terminal",
+  "short_name": "ZTrade",
+  "description": "Event-driven automated trading terminal for Bybit.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0A0A0A",
+  "theme_color": "#00FF41",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

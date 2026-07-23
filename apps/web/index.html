@@ -2,8 +2,27 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ZTrade | Terminal</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <title>ZTrade Terminal</title>
+    <meta name="description" content="Event-driven automated trading terminal for Bybit — live orderbook, risk engine and strategy control." />
+
+    <!-- Matches the terminal background so mobile browser chrome does not flash white. -->
+    <meta name="theme-color" content="#0A0A0A" />
+    <meta name="color-scheme" content="dark" />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ZTrade" />
+
+    <!-- A self-hosted trading terminal should never be indexed or previewed. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -17,6 +36,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="font-family: ui-monospace, monospace; color: #e5e2e1; background: #0A0A0A; padding: 2rem">
+        ZTrade requires JavaScript. It is a live trading terminal — real-time position
+        and orderbook data cannot be rendered without it.
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

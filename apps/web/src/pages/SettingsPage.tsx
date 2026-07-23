@@ -7,7 +7,8 @@ import type {
 } from "@ztrade/shared";
 import { api, ApiError } from "../lib/api";
 import type { LiveFeed } from "../lib/useLiveFeed";
-import { Badge, ErrorBanner, Panel, Toggle } from "../components/Ui";
+import { Badge, Panel, Toggle } from "../components/Ui";
+import { useToast } from "../components/Toast";
 import { Icon } from "../components/Shell";
 import { setToken } from "../lib/auth";
 import { dateTime, signedUsd, time } from "../lib/format";
@@ -20,9 +21,8 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
   const [telegram, setTelegram] = useState<TelegramSettings | null>(null);
   const [breaker, setBreaker] = useState<CircuitBreakerConfig | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     api
@@ -33,7 +33,7 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
         setBreaker(s.circuitBreaker);
         document.documentElement.classList.toggle("hc", s.ui.highContrast);
       })
-      .catch((err: ApiError) => setError(err.message));
+      .catch((err: ApiError) => toast.error("Could not load settings", err.message));
 
     api.audit(50).then(setAudit).catch(() => setAudit([]));
   }, []);
@@ -41,10 +41,8 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
   function report(fn: () => Promise<void>): () => void {
     return () => {
       setBusy(true);
-      setError(null);
-      setNotice(null);
       fn()
-        .catch((err) => setError((err as ApiError).message))
+        .catch((err) => toast.error("Action failed", (err as ApiError).message))
         .finally(() => setBusy(false));
     };
   }
@@ -62,27 +60,25 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
       notifyDailySummary: telegram.notifyDailySummary,
       notifyErrors: telegram.notifyErrors,
     });
-    setNotice("Telegram settings saved.");
+    toast.success("Telegram settings saved");
   });
 
   const saveBreaker = report(async () => {
     if (!breaker) return;
     await api.saveCircuitBreaker(breaker);
-    setNotice("Circuit breaker settings saved.");
+    toast.success("Circuit breaker settings saved");
   });
 
   const testTelegram = report(async () => {
     const { ok } = await api.testTelegram();
-    setNotice(ok ? "Test message sent." : "Telegram rejected the request.");
+    if (ok) toast.success("Test message sent");
+    else toast.error("Telegram rejected the request", "Check the bot token and chat ID.");
   });
 
   const testExchange = report(async () => {
     const result = await api.testExchange();
-    setNotice(
-      result.ok
-        ? `Bybit reachable — ${result.latencyMs ?? "?"}ms round trip.`
-        : `Bybit check failed${result.reason ? `: ${result.reason}` : ""}.`,
-    );
+    if (result.ok) toast.success("Bybit reachable", `${result.latencyMs ?? "?"}ms round trip.`);
+    else toast.error("Bybit check failed", result.reason ?? "Credentials were rejected.");
   });
 
   const emergencyStop = report(async () => {
@@ -91,7 +87,7 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
     );
     if (!confirmed) return;
     const result = await api.emergencyStop();
-    setNotice(`Emergency stop complete — ${result.closed} position(s) closed.`);
+    toast.warning("Emergency stop complete", `${result.closed} position(s) closed.`);
   });
 
   async function toggleHighContrast(next: boolean): Promise<void> {
@@ -100,7 +96,7 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
     try {
       await api.saveUi({ highContrast: next });
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Could not save theme", (err as ApiError).message);
     }
   }
 
@@ -109,13 +105,6 @@ export function SettingsPage({ feed }: { feed: LiveFeed }) {
 
   return (
     <div className="space-y-4">
-      <ErrorBanner message={error} />
-      {notice && (
-        <div className="border border-outline-variant bg-surface-container-low px-4 py-2.5 font-mono text-xs text-on-surface-variant">
-          {notice}
-        </div>
-      )}
-
       <div>
         <h1 className="font-mono text-lg font-semibold text-on-surface">
           System Configuration

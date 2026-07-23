@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import type { DashboardSnapshot } from "@ztrade/shared";
 import { api, ApiError } from "../lib/api";
 import type { LiveFeed } from "../lib/useLiveFeed";
-import { Badge, EmptyState, ErrorBanner, Panel } from "../components/Ui";
+import { Badge, EmptyState, Panel } from "../components/Ui";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+import { SetupChecklist } from "../components/SetupChecklist";
+import { useToast } from "../components/Toast";
 import { EquityChart } from "../components/EquityChart";
 import { IntelPanel } from "../components/IntelPanel";
 import { LiveBookPanel } from "../components/LiveBookPanel";
@@ -11,9 +14,8 @@ import { pct, pnlClass, prettyPair, signedUsd, time, usd } from "../lib/format";
 
 export function Dashboard({ feed }: { feed: LiveFeed }) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   useEffect(() => {
     void refresh();
@@ -23,7 +25,7 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
     try {
       setSnapshot(await api.dashboard());
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Could not load dashboard", (err as ApiError).message);
     }
   }
 
@@ -41,22 +43,24 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
 
   async function control(action: "start" | "stop" | "emergency"): Promise<void> {
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
-      if (action === "start") await api.startEngine();
-      else if (action === "stop") await api.stopEngine();
-      else {
+      if (action === "start") {
+        await api.startEngine();
+        toast.success("Engine started");
+      } else if (action === "stop") {
+        await api.stopEngine();
+        toast.info("Engine stopped", "Open positions were left untouched.");
+      } else {
         const confirmed = window.confirm(
           "FORCE CLOSE will market-close every open position immediately. Continue?",
         );
         if (!confirmed) return;
         const result = await api.emergencyStop();
-        setNotice(`Emergency stop complete — ${result.closed} position(s) closed.`);
+        toast.warning("Emergency stop complete", `${result.closed} position(s) closed.`);
       }
       await refresh();
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Engine command failed", (err as ApiError).message);
     } finally {
       setBusy(false);
     }
@@ -66,9 +70,9 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
     setBusy(true);
     try {
       await api.resetCircuitBreaker();
-      setNotice("Circuit breaker reset.");
+      toast.success("Circuit breaker reset");
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Could not reset breaker", (err as ApiError).message);
     } finally {
       setBusy(false);
     }
@@ -76,12 +80,7 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
 
   return (
     <div className="space-y-4">
-      <ErrorBanner message={error} />
-      {notice && (
-        <div className="border border-outline-variant bg-surface-container-low px-4 py-2.5 font-mono text-xs text-on-surface-variant">
-          {notice}
-        </div>
-      )}
+      <SetupChecklist feed={feed} />
 
       {/* Execution engine control bar */}
       <Panel
@@ -220,9 +219,13 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
         <EquityChart points={snapshot?.equityCurve ?? []} />
       </Panel>
 
-      <LiveBookPanel symbols={["BTCUSDT", "ETHUSDT"]} />
+      <ErrorBoundary compact label="Live orderbook">
+        <LiveBookPanel symbols={["BTCUSDT", "ETHUSDT"]} />
+      </ErrorBoundary>
 
-      <IntelPanel />
+      <ErrorBoundary compact label="Market intelligence">
+        <IntelPanel />
+      </ErrorBoundary>
 
       <Panel title="Recent Executions" bodyClassName="p-0">
         {trades.length === 0 ? (

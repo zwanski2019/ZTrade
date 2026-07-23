@@ -7,7 +7,8 @@ import type {
 } from "@ztrade/shared";
 import { defaultRiskLimits } from "@ztrade/shared";
 import { api, ApiError } from "../lib/api";
-import { Badge, ErrorBanner, Panel } from "../components/Ui";
+import { Badge, Panel } from "../components/Ui";
+import { useToast } from "../components/Toast";
 import { Icon } from "../components/Shell";
 import { num, pct, signedUsd, usd } from "../lib/format";
 
@@ -49,9 +50,8 @@ const BLANK: Omit<StrategyConfig, "updatedAt"> = {
 export function StrategyConfigPage() {
   const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
   const [draft, setDraft] = useState<Omit<StrategyConfig, "updatedAt">>(BLANK);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const toast = useToast();
   const [backtesting, setBacktesting] = useState(false);
   const [backtest, setBacktest] = useState<BacktestResult | null>(null);
   const [newPair, setNewPair] = useState("");
@@ -68,7 +68,7 @@ export function StrategyConfigPage() {
       const preferred = list.find((s) => s.enabled) ?? list[0];
       if (preferred) setDraft(preferred);
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Could not load strategies", (err as ApiError).message);
     }
   }
 
@@ -82,29 +82,23 @@ export function StrategyConfigPage() {
     const symbol = newPair.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!symbol) return;
     if (draft.pairs.includes(symbol)) {
-      setError(`${symbol} is already in the list`);
+      toast.warning(`${symbol} is already in the list`);
       return;
     }
     setDraft((d) => ({ ...d, pairs: [...d.pairs, symbol] }));
     setNewPair("");
-    setError(null);
   }
 
   async function save(): Promise<void> {
     setSaving(true);
-    setError(null);
-    setNotice(null);
     try {
       const saved = await api.saveStrategy({ ...draft, id: draft.id || undefined });
       setDraft(saved);
       await reload();
-      setNotice(
-        saved.enabled
-          ? `Saved and armed "${saved.name}".`
-          : `Saved "${saved.name}". It is not armed — enable it to let the engine trade it.`,
-      );
+      if (saved.enabled) toast.success(`Saved and armed "${saved.name}"`);
+      else toast.info(`Saved "${saved.name}"`, "Not armed — enable it to let the engine trade it.");
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Could not save strategy", (err as ApiError).message);
     } finally {
       setSaving(false);
     }
@@ -112,15 +106,16 @@ export function StrategyConfigPage() {
 
   async function runBacktest(): Promise<void> {
     if (!draft.id) {
-      setError("Save the strategy before running a backtest.");
+      toast.warning("Save the strategy first", "A backtest runs against a saved strategy.");
       return;
     }
     setBacktesting(true);
-    setError(null);
     try {
-      setBacktest(await api.backtest(draft.id, { candles: 500 }));
+      const result = await api.backtest(draft.id, { candles: 500 });
+      setBacktest(result);
+      toast.success("Backtest complete", `${result.tradesCount} trades simulated.`);
     } catch (err) {
-      setError((err as ApiError).message);
+      toast.error("Backtest failed", (err as ApiError).message);
     } finally {
       setBacktesting(false);
     }
@@ -128,13 +123,6 @@ export function StrategyConfigPage() {
 
   return (
     <div className="space-y-4">
-      <ErrorBanner message={error} />
-      {notice && (
-        <div className="border border-outline-variant bg-surface-container-low px-4 py-2.5 font-mono text-xs text-on-surface-variant">
-          {notice}
-        </div>
-      )}
-
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-mono text-lg font-semibold text-on-surface">Strategy Config</h1>

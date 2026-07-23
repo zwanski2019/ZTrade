@@ -1,0 +1,3 @@
+# ZTrade is a self-hosted trading terminal, not a public website.
+User-agent: *
+Disallow: /
