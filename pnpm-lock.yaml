@@ -200,6 +200,25 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  packages/risk:
+    dependencies:
+      '@ztrade/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ztrade/security':
+        specifier: workspace:*
+        version: link:../security
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/security:
     dependencies:
       '@ztrade/core':

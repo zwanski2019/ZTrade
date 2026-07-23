@@ -12,7 +12,7 @@ ledger: what exists, what does not, and how each subsystem fails.
 | **0 — Spine** | core types, bus, clock, security, redaction, audit chain | **Done** |
 | **1 — Read-only** | Bybit WS ingestion, L2 rebuild, feature store | **Done** — §4.1 acceptance green, verified against live Bybit |
 | **2 — Sim loop** | sim-fill adapter, canary, parity gate | **Done** (gate #7 green) |
-| **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Partial** — order SM + idempotency done; rate-limit scheduler and TWAP/iceberg not built |
+| **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Mostly done** — risk engine, scheduler, smart exec and out-of-process kill switch built; **reconciliation loop outstanding** |
 | **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **Not started** |
 | **5 — Small live** | mainnet, all gates green | **Blocked** on 1, 3, 4 |
 
@@ -26,17 +26,17 @@ the directive's "additive, migrate incrementally" instruction requires.
 
 | # | Gate | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | Kill switch works cold | **Partial** | `Broker.cancelAll` implemented + tested; still lives in-process, so it does not yet satisfy "reachable when the loop is wedged" |
+| 1 | Kill switch works cold | **Done** | Runs on a dedicated worker thread with its own listener; proven to answer while the main thread is wedged in a 2s busy loop |
 | 2 | Dead-man's switch armed | **Partial** | `set_dcp` payload built + clamped + tested; not yet wired to a live private WS |
-| 3 | Risk engine vetoes independently | **Partial** | `RiskGate` runs outside strategy in the engine loop; the full check set from §4.4 is not ported |
+| 3 | Risk engine vetoes independently | **Done** | `packages/risk` — all 7 §4.4 checks + 3-state breaker, property-tested that exposure can never breach the cap |
 | 4 | Idempotent orders | **Done** | Deterministic `orderLinkId`; duplicate submission refused — `parity.test.ts` |
 | 5 | No plaintext keys in logs | **Done** | Two-layer redaction + end-to-end `pnpm gate:secrets` |
 | 6 | State recovers on restart | **Not done** | Journal + reconciliation not built on the new spine |
 | 7 | Backtest == live parity | **Done** | `pnpm gate:parity` |
 
-Gates 1, 2 and 3 are marked Partial deliberately: the *mechanism* is built and
-tested, the *wiring* to a live venue is Phase 4 work. Calling them done would be
-the exact kind of overstatement that gets an account drained.
+Gate 2 remains Partial deliberately: the `set_dcp` payload is built, clamped and
+tested, but it is not yet sent on a live authenticated private WS. Calling it
+done would be the exact kind of overstatement that gets an account drained.
 
 ---
 
@@ -148,6 +148,47 @@ Incremental updates are property-tested against a naive full recompute.
 **Known limit:** rolling variance uses Welford rather than sum-of-squares
 because the latter loses catastrophic precision at asset-price magnitudes; the
 test asserts agreement to 1e-6 relative.
+
+### `packages/risk` — risk engine
+
+**How it fails:** a strategy bug emits an intent that would concentrate,
+over-lever, or burst-order the account into a hole.
+**How it recovers:** every intent passes through, and a veto is final —
+strategies have no path to a broker, so this cannot be routed around. Checks run
+cheapest-first and all seven are hard denials. A vetoed order is logged as a
+first-class decision; silently dropping intents is how you end up staring at a
+strategy that "isn't trading" with no record of why.
+**Deliberate exception:** reduce-only orders survive a tripped breaker.
+Blocking them would trap the operator in the very position the breaker fired
+over.
+**Proof:** fuzzed intents across 300 seeds can never push aggregate notional
+past the cap, and nothing is ever accepted while the breaker blocks new risk.
+
+### `packages/execution` — kill switch
+
+**How it fails:** the trading loop wedges — infinite loop, sync stall, deadlocked
+await — while holding exposure. An in-process kill switch is exactly as stuck as
+the thing it is meant to stop.
+**How it recovers:** it runs on a dedicated worker thread with its own event
+loop and HTTP listener, holds its own credentials, and shares NO state with the
+engine. Any shared structure is one that can be mid-mutation when the main
+thread hangs. It cancels before flattening, because flattening while resting
+orders are live can have them fill against the flattening trade and re-open the
+position. Each symbol is closed independently: a partial flatten beats none.
+**Proof:** the gate test wedges the main thread in a 2s busy loop and asserts
+the request was both issued and served inside that window.
+**Known limit:** it fires blind. It does not reconcile, does not verify the
+flatten succeeded, and does not retry. It is the last resort, not a workflow.
+
+### `packages/execution` — rate scheduler
+
+**How it fails:** blind firing earns a 10006/10018, and the forced back-off
+lands precisely when you most need an order to reach the venue.
+**How it recovers:** per-category token buckets (one global bucket lets a
+market-data burst starve order placement), exponential back-off on rate errors,
+and venue headers treated as authoritative *downward only* — the venue counts
+requests we may not know about, so a header can lower our estimate but never
+inflate it.
 
 ### `packages/execution` — engine loop
 
