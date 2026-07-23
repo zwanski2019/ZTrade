@@ -75,6 +75,24 @@ export class Engine {
     return this.orders;
   }
 
+  /**
+   * Overrides the engine's net position for a symbol.
+   *
+   * Reconciliation-only. The exchange is the source of truth for what we
+   * actually hold, so when the reconciler finds a mismatch it forces the engine
+   * to the venue's number. Nothing else should call this — a strategy or the
+   * normal fill path adjusting position through here would hide real drift.
+   */
+  overridePosition(symbol: string, size: number): void {
+    if (size === 0) this.positions.delete(symbol);
+    else this.positions.set(symbol, size);
+  }
+
+  /** Seeds recovered orders on cold start, before any new event is processed. */
+  restoreOrders(orders: ReadonlyMap<string, OrderRecord>): void {
+    for (const [id, order] of orders) this.orders.set(id, order);
+  }
+
   /** Processes one event end to end. */
   async handle(event: EngineEvent): Promise<void> {
     this.clock.advanceTo(event.exchangeTs);

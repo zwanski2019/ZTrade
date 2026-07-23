@@ -5,6 +5,41 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-23
+
+Phase 4 — the live path goes real. Closes ship gates #2 and #6, leaving all
+seven green in code.
+
+### Added
+
+- **Private WebSocket account stream** (`@ztrade/adapters-bybit`). Authenticates,
+  arms the dead-man's switch, then subscribes — in that exact order, because the
+  arming must be in place before any fill can occur. Re-arms on every reconnect,
+  since the venue tied the previous arming to the connection that dropped. A
+  rejected auth does not spin-retry. **Gate #2.**
+- **Durable journal + cold-start recovery** (`@ztrade/execution`). Every account
+  event is written to JSONL synchronously before the broker sees it. On restart,
+  the journal is replayed through the identical order-state machine, reconciled
+  against the venue, and trading stays OFF until reconciled — a recovery gate
+  that fails closed. A torn final line from a killed write is skipped, not fatal.
+  **Gate #6.**
+- **Live pipeline** assembling broker + private WS + journal + reconciler + engine
+  into a system that runs against testnet, with periodic reconciliation that
+  corrects position drift toward the exchange.
+
+### Verified
+
+- The private WS connect/auth sequence was run against **real Bybit testnet**:
+  the socket connected, sent a well-formed auth frame, and received the venue's
+  genuine rejection ("API key is invalid") — proving everything up to the point
+  real keys take over, and that a rejection does not arm the switch or spin.
+- 352 tests across 11 packages; parity and secret gates green.
+
+### Fixed
+
+- The private WS spun on a rejected auth (close → reconnect → re-reject). It now
+  stays ERROR and waits for an operator restart.
+
 ## [0.5.0] — 2026-07-23
 
 ### Added
@@ -108,6 +143,7 @@ gates. Additive — the existing engine is untouched and still runs.
 - Three-switch safety posture: testnet default, mainnet double opt-in, separate
   live-order gate.
 
+[0.6.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.6.0
 [0.5.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.5.0
 [0.4.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.3.0

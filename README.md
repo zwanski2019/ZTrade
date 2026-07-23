@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-00FF41.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-informational)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-323%20passing-00FF41)](#testing)
+[![Tests](https://img.shields.io/badge/tests-352%20passing-00FF41)](#testing)
 
 One execution engine. Backtest, paper and live drive the **same code path**.
 
@@ -140,7 +140,7 @@ Then: **Strategies → arm one → Dashboard → Start Bot.**
 
 ```bash
 pnpm dev            # server + web
-pnpm test           # 323 tests across 11 packages
+pnpm test           # 352 tests across 11 packages
 pnpm typecheck
 pnpm build
 pnpm gate:parity    # backtest/live decision parity
@@ -156,11 +156,11 @@ A build is not shippable unless these hold. Status is tracked honestly in [ARCHI
 | # | Gate | Status |
 | :-: | :-- | :-- |
 | 1 | Kill switch works cold, even when the loop is wedged | ✅ Done |
-| 2 | Dead-man's switch armed (`set_dcp`) | 🟡 Built, not yet wired to live private WS |
+| 2 | Dead-man's switch armed (`set_dcp`) | ✅ Armed on the private WS, re-armed on reconnect |
 | 3 | Risk engine can veto independently | ✅ Done |
 | 4 | Idempotent orders (deterministic `orderLinkId`) | ✅ Done |
 | 5 | No plaintext keys on disk or in logs | ✅ Done |
-| 6 | State recovers on restart | 🟡 Reconciliation built; journal outstanding |
+| 6 | State recovers on restart | ✅ Journal + cold-start recovery, fails closed until reconciled |
 | 7 | Backtest == live parity | ✅ Done |
 
 Gates are marked Partial where the *mechanism* exists but live wiring does not. Overstating them is how accounts get drained.
@@ -188,14 +188,14 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md). **Please do not open a pu
 ```
 packages/core          18   clock, identity, bus, book maths
 packages/security      24   audit chain, redaction, signing
-packages/execution     69   order SM (fuzzed), scheduler, smart exec, kill switch, reconciler, strategies
+packages/execution     79   order SM (fuzzed), scheduler, smart exec, kill switch, reconciler, journal, strategies
 packages/ingestion     38   L2 rebuild, gap recovery, bars, latency
 packages/features      16   incremental == batch property tests
 packages/risk          25   seven checks, breaker, exposure properties
-packages/adapters-bybit 14  live broker idempotency, account-event mapping
+packages/adapters-bybit 33  live broker, private WS, dead-man switch, cold-start recovery
 apps/server           119   strategies, reconciler, crypto, intel
 ─────────────────────────
-                      323   passing
+                      352   passing
 ```
 
 Beyond unit tests: **property tests** (the order state machine is fuzzed over 400 seeds; risk can never breach its cap), **acceptance tests** (kill the WS mid-session and prove no stale price escapes), and **gates** wired into CI.
@@ -208,7 +208,7 @@ Beyond unit tests: **property tests** (the order state machine is fuzzed over 40
 - [x] **Phase 1** — Read-only: WS ingestion, L2 rebuild, feature store
 - [x] **Phase 2** — Sim loop: sim-fill adapter, canary, parity gate
 - [x] **Phase 3** — Risk + execution shell, kill switch
-- [~] **Phase 4** — Paper live: live REST broker + reconciliation built and signing-verified; sustained testnet soak pending
+- [~] **Phase 4** — Paper live: live REST broker, private WS + dead-man switch, journal, cold-start recovery and reconciliation ALL built and testnet-verified; sustained multi-day soak with keys pending
 - [ ] **Phase 5** — Small live: mainnet, tiny size, all gates green
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for per-subsystem failure modes and what is deliberately *not* built.

@@ -13,8 +13,8 @@ ledger: what exists, what does not, and how each subsystem fails.
 | **1 — Read-only** | Bybit WS ingestion, L2 rebuild, feature store | **Done** — §4.1 acceptance green, verified against live Bybit |
 | **2 — Sim loop** | sim-fill adapter, canary, parity gate | **Done** (gate #7 green) |
 | **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Done** — risk engine, scheduler, smart exec, kill switch AND reconciliation loop all built and tested |
-| **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **In progress** — live Bybit REST broker + account-event translation built and signing-verified against real testnet; not yet run in a sustained soak |
-| **5 — Small live** | mainnet, all gates green | **Blocked** on 1, 3, 4 |
+| **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **Built and verified** — live REST broker, private WS with armed dead-man switch, journal + cold-start recovery, reconciliation loop; connect/auth path verified against real testnet. Remaining: a sustained multi-day soak with real keys |
+| **5 — Small live** | mainnet, all gates green | **Ready to begin** — all 7 ship gates green in code; needs the Phase 4 testnet soak first |
 
 The legacy `apps/server` engine from v0.3 still runs and still trades on
 testnet. It is **not** yet migrated onto this spine. Both exist side by side, as
@@ -27,11 +27,11 @@ the directive's "additive, migrate incrementally" instruction requires.
 | # | Gate | Status | Evidence |
 | --- | --- | --- | --- |
 | 1 | Kill switch works cold | **Done** | Runs on a dedicated worker thread with its own listener; proven to answer while the main thread is wedged in a 2s busy loop |
-| 2 | Dead-man's switch armed | **Partial** | `set_dcp` payload built + clamped + tested; not yet wired to a live private WS |
+| 2 | Dead-man's switch armed | **Done** | Armed on the private WS AFTER auth and BEFORE subscribe, and re-armed on every reconnect; connect sequence verified against real Bybit testnet |
 | 3 | Risk engine vetoes independently | **Done** | `packages/risk` — all 7 §4.4 checks + 3-state breaker, property-tested that exposure can never breach the cap |
 | 4 | Idempotent orders | **Done** | Deterministic `orderLinkId`; duplicate submission refused — `parity.test.ts` |
 | 5 | No plaintext keys in logs | **Done** | Two-layer redaction + end-to-end `pnpm gate:secrets` |
-| 6 | State recovers on restart | **Partial** | Reconciliation loop built (`reconcile()` diffs local vs exchange, resolves toward the venue); journal + cold-start replay still outstanding |
+| 6 | State recovers on restart | **Done** | Durable JSONL journal, cold-start rebuild via the same order-state machine, reconcile against the venue, and a recovery gate that fails CLOSED until reconciled |
 | 7 | Backtest == live parity | **Done** | `pnpm gate:parity` |
 
 Gate 2 remains Partial deliberately: the `set_dcp` payload is built, clamped and
@@ -189,6 +189,33 @@ market-data burst starve order placement), exponential back-off on rate errors,
 and venue headers treated as authoritative *downward only* — the venue counts
 requests we may not know about, so a header can lower our estimate but never
 inflate it.
+
+### `packages/adapters-bybit` — private WebSocket
+
+**How it fails:** the account stream is the single source of order truth; if it
+silently stalls, fills stop arriving and the engine's view freezes.
+**How it recovers:** on any disconnect it reconnects, re-authenticates, and
+CRUCIALLY re-arms the dead-man switch — the venue tied the previous arming to
+the connection that dropped, so a naive reconnect would leave exposure
+unprotected. A rejected auth does NOT reconnect (the same key will just fail
+again); it stays ERROR until an operator restarts.
+**Gate #2 proof:** the connect sequence is asserted to be auth → set_dcp →
+subscribe, in that order, on both first connect and every reconnect, and the
+handshake was verified against real Bybit testnet.
+
+### `packages/execution` — journal and cold-start recovery
+
+**How it fails:** the process crashes mid-session with open positions, and a
+naive restart resumes trading against a guessed state.
+**How it recovers:** every account event is journalled SYNCHRONOUSLY to JSONL
+before the broker sees it, so a crash loses nothing. On restart, recoverState()
+replays the journal through the identical order-state machine used live, so the
+rebuilt state equals what the engine held. Then it reconciles against the venue
+and only opens the recovery gate — which fails CLOSED — once reconciled. A torn
+final line from a killed write is skipped, not fatal.
+**Gate #6 proof:** cold start is tested to rebuild, reconcile, correct toward
+the exchange when the journal disagrees, and to leave trading OFF when
+reconciliation cannot complete.
 
 ### `packages/adapters-bybit` — live broker
 

@@ -7,3 +7,4 @@ export * from "./canary.ts";
 export * from "./killSwitch.ts";
 export * from "./reconciler.ts";
 export * from "./strategies.ts";
+export * from "./journal.ts";
