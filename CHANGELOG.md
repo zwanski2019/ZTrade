@@ -5,6 +5,32 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-23
+
+### Added
+
+- **`@ztrade/adapters-bybit` — the live broker.** Implements the same `Broker`
+  interface the sim adapter does, so backtest, paper and live now genuinely
+  drive the identical engine. Bybit v5 REST with request signing, deterministic
+  `orderLinkId` passthrough for idempotency (a timeout-and-retry is rejected as
+  a duplicate, never double-filled), and account-event translation that turns
+  private-stream messages into order-state transitions. Order truth comes only
+  from the execution stream, never from a REST 200.
+- **Reconciliation loop** (`reconcile()` in `@ztrade/execution`). Periodically
+  diffs local order and position state against the exchange and resolves
+  disagreements toward the venue. Catches the dropped WebSocket messages that
+  would otherwise leave risk sizing against a position the engine does not
+  really hold. Progress toward ship gate #6.
+- **Two reference strategies:** Donchian breakout (trend-following) and
+  volume-weighted VWAP mean reversion (counter-trend), both pure and
+  replay-deterministic, giving the regime filter genuinely opposed logic to
+  arbitrate between.
+
+### Verified
+
+- Live signing proven against real Bybit **testnet** (read-only round trip).
+- 323 tests across 11 packages; parity and secret gates green.
+
 ## [0.4.0] — 2026-07-23
 
 Advanced systems build: an event-driven spine with parity, risk and safety
@@ -82,6 +108,7 @@ gates. Additive — the existing engine is untouched and still runs.
 - Three-switch safety posture: testnet default, mainnet double opt-in, separate
   live-order gate.
 
+[0.5.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.5.0
 [0.4.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zwanski2019/ZTrade/releases/tag/v0.2.0

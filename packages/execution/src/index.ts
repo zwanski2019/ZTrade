@@ -5,3 +5,5 @@ export * from "./scheduler.ts";
 export * from "./smartExec.ts";
 export * from "./canary.ts";
 export * from "./killSwitch.ts";
+export * from "./reconciler.ts";
+export * from "./strategies.ts";

@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-00FF41.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-informational)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-289%20passing-00FF41)](#testing)
+[![Tests](https://img.shields.io/badge/tests-323%20passing-00FF41)](#testing)
 
 One execution engine. Backtest, paper and live drive the **same code path**.
 
@@ -108,6 +108,7 @@ A CI gate enforces it. If a canary strategy produces different decisions in back
 | [`@ztrade/risk`](packages/risk) | Independent risk engine + 3-state circuit breaker |
 | [`@ztrade/execution`](packages/execution) | Order state machine, scheduler, smart execution, kill switch |
 | [`@ztrade/adapters-sim`](packages/adapters-sim) | Simulated fills with latency, depth, fees and queue position |
+| [`@ztrade/adapters-bybit`](packages/adapters-bybit) | **Live** Bybit v5 REST broker + account-event translation |
 | [`@ztrade/security`](packages/security) | Signing, redaction, hash-chained audit log |
 | [`apps/server`](apps/server) | Fastify API, engine, SQLite persistence, market intelligence |
 | [`apps/web`](apps/web) | React + Tailwind terminal UI |
@@ -139,7 +140,7 @@ Then: **Strategies → arm one → Dashboard → Start Bot.**
 
 ```bash
 pnpm dev            # server + web
-pnpm test           # 289 tests across 10 packages
+pnpm test           # 323 tests across 11 packages
 pnpm typecheck
 pnpm build
 pnpm gate:parity    # backtest/live decision parity
@@ -159,7 +160,7 @@ A build is not shippable unless these hold. Status is tracked honestly in [ARCHI
 | 3 | Risk engine can veto independently | ✅ Done |
 | 4 | Idempotent orders (deterministic `orderLinkId`) | ✅ Done |
 | 5 | No plaintext keys on disk or in logs | ✅ Done |
-| 6 | State recovers on restart | ❌ Not done |
+| 6 | State recovers on restart | 🟡 Reconciliation built; journal outstanding |
 | 7 | Backtest == live parity | ✅ Done |
 
 Gates are marked Partial where the *mechanism* exists but live wiring does not. Overstating them is how accounts get drained.
@@ -187,13 +188,14 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md). **Please do not open a pu
 ```
 packages/core          18   clock, identity, bus, book maths
 packages/security      24   audit chain, redaction, signing
-packages/execution     49   order SM (fuzzed), scheduler, smart exec, kill switch
+packages/execution     69   order SM (fuzzed), scheduler, smart exec, kill switch, reconciler, strategies
 packages/ingestion     38   L2 rebuild, gap recovery, bars, latency
 packages/features      16   incremental == batch property tests
 packages/risk          25   seven checks, breaker, exposure properties
+packages/adapters-bybit 14  live broker idempotency, account-event mapping
 apps/server           119   strategies, reconciler, crypto, intel
 ─────────────────────────
-                      289   passing
+                      323   passing
 ```
 
 Beyond unit tests: **property tests** (the order state machine is fuzzed over 400 seeds; risk can never breach its cap), **acceptance tests** (kill the WS mid-session and prove no stale price escapes), and **gates** wired into CI.
@@ -206,7 +208,7 @@ Beyond unit tests: **property tests** (the order state machine is fuzzed over 40
 - [x] **Phase 1** — Read-only: WS ingestion, L2 rebuild, feature store
 - [x] **Phase 2** — Sim loop: sim-fill adapter, canary, parity gate
 - [x] **Phase 3** — Risk + execution shell, kill switch
-- [ ] **Phase 4** — Paper live: private WS, dead-man armed, reconciliation on testnet
+- [~] **Phase 4** — Paper live: live REST broker + reconciliation built and signing-verified; sustained testnet soak pending
 - [ ] **Phase 5** — Small live: mainnet, tiny size, all gates green
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for per-subsystem failure modes and what is deliberately *not* built.

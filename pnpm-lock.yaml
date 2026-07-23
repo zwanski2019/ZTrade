@@ -106,6 +106,31 @@ importers:
         specifier: ^6.0.5
         version: 6.4.3(@types/node@22.20.1)(jiti@1.21.7)(terser@5.49.0)(tsx@4.23.1)
 
+  packages/adapters-bybit:
+    dependencies:
+      '@ztrade/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ztrade/execution':
+        specifier: workspace:*
+        version: link:../execution
+      '@ztrade/ingestion':
+        specifier: workspace:*
+        version: link:../ingestion
+      '@ztrade/security':
+        specifier: workspace:*
+        version: link:../security
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/adapters-sim:
     dependencies:
       '@ztrade/core':

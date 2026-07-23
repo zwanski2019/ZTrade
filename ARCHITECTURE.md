@@ -12,8 +12,8 @@ ledger: what exists, what does not, and how each subsystem fails.
 | **0 — Spine** | core types, bus, clock, security, redaction, audit chain | **Done** |
 | **1 — Read-only** | Bybit WS ingestion, L2 rebuild, feature store | **Done** — §4.1 acceptance green, verified against live Bybit |
 | **2 — Sim loop** | sim-fill adapter, canary, parity gate | **Done** (gate #7 green) |
-| **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Mostly done** — risk engine, scheduler, smart exec and out-of-process kill switch built; **reconciliation loop outstanding** |
-| **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **Not started** |
+| **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Done** — risk engine, scheduler, smart exec, kill switch AND reconciliation loop all built and tested |
+| **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **In progress** — live Bybit REST broker + account-event translation built and signing-verified against real testnet; not yet run in a sustained soak |
 | **5 — Small live** | mainnet, all gates green | **Blocked** on 1, 3, 4 |
 
 The legacy `apps/server` engine from v0.3 still runs and still trades on
@@ -31,7 +31,7 @@ the directive's "additive, migrate incrementally" instruction requires.
 | 3 | Risk engine vetoes independently | **Done** | `packages/risk` — all 7 §4.4 checks + 3-state breaker, property-tested that exposure can never breach the cap |
 | 4 | Idempotent orders | **Done** | Deterministic `orderLinkId`; duplicate submission refused — `parity.test.ts` |
 | 5 | No plaintext keys in logs | **Done** | Two-layer redaction + end-to-end `pnpm gate:secrets` |
-| 6 | State recovers on restart | **Not done** | Journal + reconciliation not built on the new spine |
+| 6 | State recovers on restart | **Partial** | Reconciliation loop built (`reconcile()` diffs local vs exchange, resolves toward the venue); journal + cold-start replay still outstanding |
 | 7 | Backtest == live parity | **Done** | `pnpm gate:parity` |
 
 Gate 2 remains Partial deliberately: the `set_dcp` payload is built, clamped and
@@ -189,6 +189,34 @@ market-data burst starve order placement), exponential back-off on rate errors,
 and venue headers treated as authoritative *downward only* — the venue counts
 requests we may not know about, so a header can lower our estimate but never
 inflate it.
+
+### `packages/adapters-bybit` — live broker
+
+**How it fails:** a submitted order times out and we do not know if it landed;
+retrying blindly double-fills.
+**How it recovers:** the deterministic `orderLinkId` is passed straight to the
+venue as its client order id. A retry reuses it, Bybit rejects the duplicate
+(110072), and the adapter reports that as `duplicate: true` — a safe outcome,
+not a failure. Order state NEVER comes from the REST response; it comes only
+from the private execution stream (§11), so a 200 that is actually a
+never-filled order cannot be mistaken for a fill.
+**Known limit:** the account WebSocket that feeds `ingestOrderEvent` is the
+single point of truth for fills; if it silently stalls, the reconciliation loop
+below is the backstop.
+
+### `packages/execution` — reconciliation loop
+
+**How it fails:** a dropped private-WS message leaves the engine believing it
+holds a position it has closed, or unaware of one it holds. Risk then sizes
+against a fiction.
+**How it recovers:** `reconcile()` periodically diffs local order/position
+state against a fresh exchange pull. Position mismatches resolve TOWARD the
+exchange — that is where the money actually is. Order-level drift (phantom and
+untracked orders) is reported for re-query and logging but not auto-cancelled,
+because acting on a single missed message is more dangerous than the brief
+inconsistency the next event will fix.
+**Known limit:** this is periodic, not continuous. Between passes the engine can
+be briefly wrong; the interval trades staleness against API budget.
 
 ### `packages/execution` — engine loop
 
