@@ -5,6 +5,7 @@ import type { LiveFeed } from "../lib/useLiveFeed";
 import { Badge, EmptyState, ErrorBanner, Panel } from "../components/Ui";
 import { EquityChart } from "../components/EquityChart";
 import { IntelPanel } from "../components/IntelPanel";
+import { LiveBookPanel } from "../components/LiveBookPanel";
 import { Icon } from "../components/Shell";
 import { pct, pnlClass, prettyPair, signedUsd, time, usd } from "../lib/format";
 
@@ -218,6 +219,8 @@ export function Dashboard({ feed }: { feed: LiveFeed }) {
       >
         <EquityChart points={snapshot?.equityCurve ?? []} />
       </Panel>
+
+      <LiveBookPanel symbols={["BTCUSDT", "ETHUSDT"]} />
 
       <IntelPanel />
 

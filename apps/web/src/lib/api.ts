@@ -65,6 +65,54 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Phase 1 market data shapes.
+ *
+ * Declared locally rather than imported from @ztrade/core so the browser
+ * bundle does not take a dependency on the ingestion spine — the wire format
+ * is the contract here, not the internal types.
+ */
+export interface BookLevel {
+  price: number;
+  size: number;
+}
+
+export interface BookView {
+  symbol: string;
+  status: string;
+  /** Null while the book is stale. Render the degraded state, not old prices. */
+  book: { bids: BookLevel[]; asks: BookLevel[] } | null;
+  reason: string | null;
+  updateId: number;
+  stats: { snapshots: number; deltas: number; gaps: number; crossed: number };
+}
+
+export interface MarketDataFeatures {
+  symbol: string;
+  spreadBps: number | null;
+  imbalance: number | null;
+  microprice: number | null;
+  flowImbalance: number | null;
+  bookFresh: boolean;
+}
+
+export interface MarketDataSnapshot {
+  running: boolean;
+  network: string;
+  symbols: string[];
+  books: BookView[];
+  features: MarketDataFeatures[];
+  ingestion: {
+    connected: boolean;
+    reconnects: number;
+    messages: number;
+    invalid: number;
+    gaps: number;
+    staleBooks: number;
+    latency: { count: number; p50: number | null; p99: number | null; max: number | null };
+  } | null;
+}
+
 export interface TradeQueryParams {
   limit?: number;
   offset?: number;
@@ -119,6 +167,16 @@ export const api = {
     request<{ ok: boolean; state: CircuitBreakerState }>("/api/circuit-breaker/reset", {
       method: "POST",
     }),
+
+  marketData: (depth = 15) =>
+    request<MarketDataSnapshot>(`/api/marketdata${query({ depth })}`),
+  startMarketData: (symbols: string[]) =>
+    request<{ ok: boolean }>("/api/marketdata/start", {
+      method: "POST",
+      body: JSON.stringify({ symbols }),
+    }),
+  stopMarketData: () =>
+    request<{ ok: boolean }>("/api/marketdata/stop", { method: "POST" }),
 
   intel: () => request<{ intel: MarketIntel; settings: IntelSettings }>("/api/intel"),
   saveIntelSettings: (body: IntelSettings) =>

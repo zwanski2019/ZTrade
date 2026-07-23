@@ -18,6 +18,7 @@ import { engine } from "../engine/engine.js";
 import { runBacktest } from "../engine/backtest.js";
 import { circuitBreaker } from "../engine/circuitBreaker.js";
 import { intel } from "../intel/index.js";
+import { marketData } from "../marketdata.js";
 import { exchange } from "../exchange/bybit.js";
 import { cachedInstrument } from "../exchange/instruments.js";
 import { buildSummary } from "../notify/scheduler.js";
@@ -190,6 +191,34 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/circuit-breaker/reset", async (req) => {
     circuitBreaker.reset(`manual reset by ${actorOf(req)}`);
     return { ok: true, state: circuitBreaker.getState(engine.getAccount()?.equity ?? 0) };
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 1 market data — READ ONLY. No endpoint here can place an order.
+  // -------------------------------------------------------------------------
+
+  app.get("/api/marketdata", async (req) => {
+    const { depth } = z
+      .object({ depth: z.coerce.number().int().min(1).max(50).default(15) })
+      .parse(req.query);
+    return marketData.snapshot(depth);
+  });
+
+  app.post("/api/marketdata/start", async (req, reply) => {
+    const parsed = z
+      .object({ symbols: z.array(z.string().regex(/^[A-Z0-9]{4,20}$/)).min(1).max(10) })
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid symbols" });
+
+    marketData.start(parsed.data.symbols);
+    auditFromRequest(req, AuditAction.SETTINGS_UPDATE, `market data started: ${parsed.data.symbols.join(",")}`);
+    return { ok: true, symbols: parsed.data.symbols };
+  });
+
+  app.post("/api/marketdata/stop", async (req) => {
+    marketData.stop();
+    auditFromRequest(req, AuditAction.SETTINGS_UPDATE, "market data stopped");
+    return { ok: true };
   });
 
   // -------------------------------------------------------------------------

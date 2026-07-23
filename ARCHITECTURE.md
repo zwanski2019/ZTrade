@@ -10,7 +10,7 @@ ledger: what exists, what does not, and how each subsystem fails.
 | Phase | Scope | Status |
 | --- | --- | --- |
 | **0 — Spine** | core types, bus, clock, security, redaction, audit chain | **Done** |
-| **1 — Read-only** | Bybit WS ingestion, L2 rebuild, feature store | **Not started** — the existing v0.3 REST poller still serves the dashboard |
+| **1 — Read-only** | Bybit WS ingestion, L2 rebuild, feature store | **Done** — §4.1 acceptance green, verified against live Bybit |
 | **2 — Sim loop** | sim-fill adapter, canary, parity gate | **Done** (gate #7 green) |
 | **3 — Risk + execution shell** | risk engine, order SM, idempotency, scheduler | **Partial** — order SM + idempotency done; rate-limit scheduler and TWAP/iceberg not built |
 | **4 — Paper live** | testnet WS/REST, reconciliation under real latency | **Not started** |
@@ -110,6 +110,45 @@ or observed volume clears the queue ahead.
 not a real matching engine. It is pessimistic by default (you join the back of
 the queue), which is the correct direction to be wrong in.
 
+### `packages/ingestion` — L2 orderbook
+
+**How it fails:** a dropped WS message leaves our book silently diverged from
+the exchange's. Every price derived from it is then wrong in a way that looks
+completely normal.
+**How you find out:** `u` must increment by exactly one. A gap marks the book
+STALE, and `snapshot()` returns null while stale — there is deliberately no
+accessor that keeps working. A crossed book (bid >= ask) is caught even when
+sequencing looks perfect: sequence continuity proves we missed nothing,
+crossed-book detection proves we applied what we got correctly. Bybit v5 linear
+publishes no per-message checksum, so this is the strongest integrity signal
+actually available.
+**How it recovers:** unsubscribe/resubscribe forces a fresh snapshot, which
+rebuilds from scratch rather than merging onto the corrupt remains. A socket
+close invalidates every book immediately, because updates that occurred while
+we were away are simply gone.
+**Proof:** the §4.1 acceptance tests assert zero events are emitted during the
+gap window, that no gap-window price leaks into any event, and that a fresh
+snapshot restores service.
+
+### `packages/ingestion` — validation
+
+**How it fails:** a malformed payload is coerced — `Number(undefined)` is NaN,
+and NaN propagates silently through arithmetic until it becomes a wrong size.
+**How it recovers:** every inbound message is Zod-parsed fail-closed. An
+invalid payload is dropped and counted, never partially applied.
+
+### `packages/features` — feature store
+
+**How it fails:** a feature is computed differently in backtest and live, so a
+strategy sees different inputs and the parity gate cannot catch it (parity
+compares decisions, and both sides would be consistently wrong).
+**How it is prevented:** the store is fed only the normalised event stream, does
+no I/O and reads no clock, so replaying a tape reproduces every value exactly.
+Incremental updates are property-tested against a naive full recompute.
+**Known limit:** rolling variance uses Welford rather than sum-of-squares
+because the latter loses catastrophic precision at asset-price magnitudes; the
+test asserts agreement to 1e-6 relative.
+
 ### `packages/execution` — engine loop
 
 **How it fails:** lookahead — a strategy sees a fill from an order it submitted
@@ -126,8 +165,10 @@ no crash recovery yet.
 
 Stated plainly so nobody mistakes scaffolding for a finished system:
 
-- **No live Bybit WS ingestion on this spine.** No L2 rebuild, no sequence-gap
-  detection, no checksum validation. Phase 1.
+- **No private WS stream.** Order/execution/position/wallet schemas exist and
+  are validated, but only the public streams are wired. Phase 3/4.
+- **No orderbook checksum.** Bybit v5 linear does not publish one; crossed-book
+  detection is the substitute (see below).
 - **No journal or cold-start reconciliation.** Gate #6 is not met; the engine
   would restart blind.
 - **No rate-limit-aware scheduler**, no TWAP, no iceberg, no post-only re-peg.
