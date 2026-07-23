@@ -10,5 +10,5 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
-  "devDependencies": { "typescript": "^5.7.2", "tsx": "^4.19.2", "@types/node": "^22.10.2" }
+  "devDependencies": { "typescript": "^7.0.2", "tsx": "^4.19.2", "@types/node": "^26.1.1" }
 }
