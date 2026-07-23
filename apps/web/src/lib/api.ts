@@ -113,6 +113,23 @@ export interface MarketDataSnapshot {
   } | null;
 }
 
+export interface SystemInfo {
+  engine: {
+    state: string; network: string; mode: string;
+    activeStrategy: string | null; exchangeConnected: boolean;
+    latencyMs: number | null; lastHeartbeat: number | null;
+    uptimeMs: number; openPositions: number; breakerState: string;
+  };
+  pipeline: {
+    running: boolean; symbols: string[];
+    ingestion: { connected: boolean; messages: number; invalid: number; gaps: number; staleBooks: number; reconnects: number; latency: { p50: number | null; p99: number | null; max: number | null } } | null;
+    books: Array<{ symbol: string; status: string; updateId: number; stats: { snapshots: number; deltas: number; gaps: number; crossed: number } }>;
+  };
+  audit: { chainValid: boolean; entries: number; head: string; brokenAt?: number; reason?: string };
+  gates: Array<{ id: number; name: string; status: string }>;
+  build: { version: string; packages: Array<{ name: string; role: string }>; tests: number };
+}
+
 export interface TradeQueryParams {
   limit?: number;
   offset?: number;
@@ -214,6 +231,9 @@ export const api = {
   audit: (limit = 100) => request<AuditEntry[]>(`/api/audit${query({ limit })}`),
   summaryPreview: (hours = 24) =>
     request<{ text: string }>(`/api/summary/preview${query({ hours })}`),
+
+  system: () =>
+    request<SystemInfo>("/api/system"),
 
   doctor: () =>
     request<{ overall: "ok" | "warn" | "fail"; checks: Array<{ name: string; severity: "ok" | "warn" | "fail"; message: string }> }>(

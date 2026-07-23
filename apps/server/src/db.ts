@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type {
   AuditEntry,
   CloseReason,
@@ -514,6 +514,37 @@ export function setSetting(key: string, value: unknown): void {
 // Audit log
 // ---------------------------------------------------------------------------
 
+// Hash-chained, tamper-evident audit log: h_n = SHA256(h_{n-1} || entry). Any
+// edit, deletion or reorder of history breaks the chain at a reportable index.
+addColumn("audit_log", "prev_hash", "TEXT");
+addColumn("audit_log", "hash", "TEXT");
+
+const AUDIT_GENESIS = "0".repeat(64);
+
+function auditCanonical(entry: AuditEntry, seq: number): string {
+  return JSON.stringify([seq, entry.at, entry.action, entry.detail, entry.actor ?? null]);
+}
+
+function auditHash(prevHash: string, entry: AuditEntry, seq: number): string {
+  return createHash("sha256").update(prevHash).update(auditCanonical(entry, seq)).digest("hex");
+}
+
+/**
+ * Current chain head. Both the seq and the head hash are computed over the
+ * CHAINED entries only (hash IS NOT NULL), so they match exactly what
+ * verifyAuditChain iterates — entries written before chaining existed do not
+ * shift the sequence and break every subsequent hash.
+ */
+function auditHead(): { hash: string; seq: number } {
+  const count = (
+    db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE hash IS NOT NULL`).get() as { n: number }
+  ).n;
+  const last = db
+    .prepare(`SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY rowid DESC LIMIT 1`)
+    .get() as { hash: string | null } | undefined;
+  return { hash: last?.hash ?? AUDIT_GENESIS, seq: count };
+}
+
 export function recordAudit(action: string, detail: string, actor: string | null): AuditEntry {
   const entry: AuditEntry = {
     id: randomUUID(),
@@ -522,9 +553,11 @@ export function recordAudit(action: string, detail: string, actor: string | null
     detail,
     actor,
   };
+  const { hash: prevHash, seq } = auditHead();
+  const hash = auditHash(prevHash, entry, seq);
   db.prepare(
-    `INSERT INTO audit_log (id, at, action, detail, actor) VALUES (?, ?, ?, ?, ?)`,
-  ).run(entry.id, entry.at, entry.action, entry.detail, entry.actor);
+    `INSERT INTO audit_log (id, at, action, detail, actor, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(entry.id, entry.at, entry.action, entry.detail, entry.actor, prevHash, hash);
   return entry;
 }
 
@@ -532,6 +565,41 @@ export function listAudit(limit = 100): AuditEntry[] {
   return db
     .prepare(`SELECT id, at, action, detail, actor FROM audit_log ORDER BY at DESC LIMIT ?`)
     .all(limit) as AuditEntry[];
+}
+
+/**
+ * Verifies the entire audit chain and reports the first divergence. Recomputes
+ * each entry's hash from its predecessor: an edit changes the content hash, a
+ * reorder or deletion breaks the linkage. Entries written before hash-chaining
+ * was added (prev_hash NULL) are skipped from the verified span.
+ */
+export function verifyAuditChain(): {
+  valid: boolean;
+  length: number;
+  head: string;
+  brokenAt?: number;
+  reason?: string;
+} {
+  const rows = db
+    .prepare(
+      `SELECT id, at, action, detail, actor, prev_hash, hash FROM audit_log
+       WHERE hash IS NOT NULL ORDER BY rowid ASC`,
+    )
+    .all() as Array<AuditEntry & { prev_hash: string | null; hash: string }>;
+
+  let prevHash = AUDIT_GENESIS;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (row.prev_hash !== prevHash) {
+      return { valid: false, length: rows.length, head: prevHash, brokenAt: i, reason: "linkage broken (reordered or removed)" };
+    }
+    const expected = auditHash(prevHash, row, i);
+    if (row.hash !== expected) {
+      return { valid: false, length: rows.length, head: prevHash, brokenAt: i, reason: "entry modified after it was written" };
+    }
+    prevHash = row.hash;
+  }
+  return { valid: true, length: rows.length, head: prevHash };
 }
 
 // ---------------------------------------------------------------------------

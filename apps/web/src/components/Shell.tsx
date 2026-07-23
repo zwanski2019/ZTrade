@@ -13,6 +13,7 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/strategy", icon: "psychology", label: "Strategies" },
   { to: "/history", icon: "history", label: "History" },
   { to: "/settings", icon: "settings", label: "Settings" },
+  { to: "/system", icon: "monitoring", label: "System" },
 ];
 
 /** Bottom bar on mobile, mirroring the mobile design variants. */

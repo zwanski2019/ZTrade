@@ -6,6 +6,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { StrategyConfigPage } from "./pages/StrategyConfig";
 import { TradeHistory } from "./pages/TradeHistory";
 import { SettingsPage } from "./pages/SettingsPage";
+import { System } from "./pages/System";
 import { useLiveFeed } from "./lib/useLiveFeed";
 import { getToken } from "./lib/auth";
 import { api, UnauthorisedError } from "./lib/api";
@@ -77,6 +78,7 @@ function AuthenticatedApp({
           <Route path="strategy" element={<StrategyConfigPage />} />
           <Route path="history" element={<TradeHistory />} />
           <Route path="settings" element={<SettingsPage feed={feed} />} />
+          <Route path="system" element={<System />} />
           <Route
             path="*"
             element={
