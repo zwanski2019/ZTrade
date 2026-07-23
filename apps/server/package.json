@@ -20,7 +20,7 @@
     "@ztrade/ingestion": "workspace:*",
     "@ztrade/security": "workspace:*",
     "@ztrade/shared": "workspace:*",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^13.0.1",
     "bybit-api": "^3.10.27",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.0",
